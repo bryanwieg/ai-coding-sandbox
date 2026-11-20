@@ -1,0 +1,61 @@
+#!/bin/sh
+# Shows the egress additions in this project's policy, and what changed since
+# the last approval, and records approval for this project folder when the
+# user confirms, or with --yes for host-side startup. Only this command writes
+# the trust store; the proxy and the agents mount it read-only.
+set -eu
+
+automatic=false
+case "$#:${1:-}" in
+    0:) ;;
+    1:--yes) automatic=true ;;
+    *) echo 'Usage: sandbox-trust [--yes]' >&2; exit 2 ;;
+esac
+
+project=/etc/squid/project-policy.yaml
+store=/trust
+folder=${HOST_PWD:?}
+
+if ! sandbox-policy check project "$project"; then
+    echo 'Fix the project egress policy first.' >&2
+    exit 1
+fi
+hash=$(sandbox-policy hash "$project")
+if [ -z "$hash" ]; then
+    echo 'This project egress policy adds nothing to the base policy; no approval is needed.'
+    exit 0
+fi
+id=$(sandbox-policy trust-id "$folder")
+if [ "$(cat "$store/$id.sha256" 2>/dev/null || :)" = "$hash" ]; then
+    echo 'This project egress policy is already approved.'
+    exit 0
+fi
+
+additions=$(sandbox-policy additions "$project")
+printf 'Project: %s\n\nEgress additions:\n' "$folder"
+printf '%s\n' "$additions" | sed 's/^/  /'
+if printf '%s\n' "$additions" | grep -qx 'unrestricted all-destinations'; then
+    printf '\nWARNING: this policy is unrestricted. The proxy will allow every host and\nport, so an agent in this project can reach and send data anywhere.\n'
+fi
+if [ -f "$store/$id.additions" ]; then
+    printf '\nChanges since the last approval:\n'
+    printf '%s\n' "$additions" | diff "$store/$id.additions" - | sed -n 's/^< /  - /p; s/^> /  + /p'
+fi
+if [ "$automatic" = false ]; then
+    printf '\nAllow these egress additions for this project? [y/N]: '
+    answer=
+    read -r answer || :
+    case "$answer" in
+        y|Y|yes|YES) ;;
+        *) echo 'Not approved.'; exit 1 ;;
+    esac
+fi
+
+umask 022
+printf '%s\n' "$additions" > "$store/.$id.additions"
+printf '%s\n' "$folder" > "$store/.$id.path"
+printf '%s\n' "$hash" > "$store/.$id.sha256"
+mv "$store/.$id.additions" "$store/$id.additions"
+mv "$store/.$id.path" "$store/$id.path"
+mv "$store/.$id.sha256" "$store/$id.sha256"
+echo 'Approved. The proxy applies it when it next starts; the sandbox command restarts a running one.'

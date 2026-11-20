@@ -1,0 +1,11 @@
+#!/bin/sh
+# Keeps one long-lived connection to the session daemon open, reconnecting
+# within a second when it drops, until the container exits.
+set -u
+
+interval=${SANDBOX_DOCKER_LEASE_RETRY:-1}
+
+while :; do
+    docker events >/dev/null 2>&1
+    sleep "$interval"
+done

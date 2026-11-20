@@ -1,0 +1,9 @@
+{
+  "name": "codex-sandbox-claude",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Pinned Claude Code CLI dependency installed in its own Docker layer.",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.328"
+  }
+}

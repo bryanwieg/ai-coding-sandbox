@@ -1,0 +1,15 @@
+#!/bin/sh
+# PowerShell needs writable XDG directories even with a read-only home.
+# Scope these to PowerShell and its children, leaving other tools unchanged.
+set -eu
+
+state=/tmp/powershell-$(id -u)
+XDG_CACHE_HOME=$state/cache
+XDG_DATA_HOME=$state/data
+XDG_CONFIG_HOME=$state/config
+export XDG_CACHE_HOME XDG_DATA_HOME XDG_CONFIG_HOME
+(
+    umask 077
+    mkdir -p "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_CONFIG_HOME"
+)
+exec /usr/share/powershell/pwsh "$@"

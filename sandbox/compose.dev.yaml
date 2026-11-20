@@ -1,0 +1,62 @@
+# Development overlay for this repository: builds every session image from
+# this checkout instead of pulling the released ones. Only build, image and
+# pull_policy may appear here (check-sandbox enforces it), so the security
+# settings are exactly the release file's. This repository's .sandbox/env sets
+#
+#   COMPOSE_FILE=sandbox/compose.session.yaml,sandbox/compose.dev.yaml
+#
+# so the build context is this folder. pull_policy: build rebuilds at every
+# launch, which Docker's build cache keeps fast.
+
+x-dev: &dev
+  pull_policy: build
+
+services:
+  claude:
+    <<: *dev
+    image: ai-coding-sandbox-dev:claude
+    build: {context: ., target: claude}
+  claude-state-init:
+    <<: *dev
+    image: ai-coding-sandbox-dev:claude
+    build: {context: ., target: claude}
+  codex:
+    <<: *dev
+    image: ai-coding-sandbox-dev:codex
+    build: {context: ., target: codex}
+  codex-state-init:
+    <<: *dev
+    image: ai-coding-sandbox-dev:codex
+    build: {context: ., target: codex}
+  migrate-claude-state:
+    <<: *dev
+    image: ai-coding-sandbox-dev:codex
+    build: {context: ., target: codex}
+  migrate-codex-state:
+    <<: *dev
+    image: ai-coding-sandbox-dev:codex
+    build: {context: ., target: codex}
+  egress-proxy:
+    <<: *dev
+    image: ai-coding-sandbox-dev:proxy
+    build: {context: ., target: session-proxy}
+  trust:
+    <<: *dev
+    image: ai-coding-sandbox-dev:proxy
+    build: {context: ., target: session-proxy}
+  docker:
+    <<: *dev
+    image: ai-coding-sandbox-dev:docker-daemon
+    build: {context: ., target: session-daemon}
+  publish:
+    <<: *dev
+    image: ai-coding-sandbox-dev:forwarder
+    build: {context: ., target: session-forwarder}
+  ssh-agent:
+    <<: *dev
+    image: ai-coding-sandbox-dev:ssh-agent
+    build: {context: ., target: session-ssh-agent}
+  ssh-unlock:
+    <<: *dev
+    image: ai-coding-sandbox-dev:ssh-agent
+    build: {context: ., target: session-ssh-agent}

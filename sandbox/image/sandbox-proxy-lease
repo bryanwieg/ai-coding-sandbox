@@ -1,0 +1,12 @@
+#!/bin/sh
+# Keeps one idle connection to the session's egress proxy open, reconnecting
+# within a second when Squid closes it, until the container exits. The proxy
+# stops itself once no session holds a connection.
+set -u
+
+interval=${SANDBOX_PROXY_LEASE_RETRY:-1}
+
+while :; do
+    bash -c 'exec 3<>/dev/tcp/egress-proxy/3128 && cat <&3' >/dev/null 2>&1
+    sleep "$interval"
+done

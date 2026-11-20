@@ -1,0 +1,104 @@
+#!/bin/sh
+# Renders the session proxy's Squid configuration. It allows the base policy
+# built into the image and adds the project's policy only when its entries
+# were approved for this project folder with the trust command. Unapproved or
+# invalid additions are left out, never applied, so the proxy still runs with
+# the base policy. It records the project policy hash it applied (empty for
+# the base policy only) in /tmp/applied-policy, so the host's sandbox command
+# can bring a proxy whose policy is out of date up to date.
+#
+# The proxy entrypoint runs it before starting Squid. With --reload, run in
+# the running proxy (docker compose exec egress-proxy sandbox-proxy-config
+# --reload), it also has Squid reread the configuration in place, keeping its
+# open connections. A configuration that fails to parse replaces nothing.
+set -eu
+
+reload=false
+case "$#:${1:-}" in
+    0:) ;;
+    1:--reload) reload=true ;;
+    *) echo 'Usage: sandbox-proxy-config [--reload]' >&2; exit 2 ;;
+esac
+
+template=/etc/squid/squid.conf.template
+base=/etc/squid/base-policy.yaml
+project=/etc/squid/project-policy.yaml
+store=/trust
+rendered_config=/tmp/squid.conf
+applied=
+
+stage=$(mktemp -d /tmp/proxy-config.XXXXXX)
+trap 'rm -rf "$stage"' EXIT
+merged=$stage/egress-policy
+
+sandbox-policy check base "$base"
+sandbox-policy additions "$base" > "$merged"
+
+if [ -f "$project" ] && ! sandbox-policy check project "$project"; then
+    echo 'sandbox-proxy: the project egress policy is invalid; using the base policy only.' >&2
+elif [ -f "$project" ]; then
+    hash=$(sandbox-policy hash "$project")
+    if [ -n "$hash" ]; then
+        id=$(sandbox-policy trust-id "${HOST_PWD:?}")
+        if [ "$(cat "$store/$id.sha256" 2>/dev/null || :)" = "$hash" ]; then
+            sandbox-policy additions "$project" >> "$merged"
+            applied=$hash
+            echo 'sandbox-proxy: applying the approved project egress policy.' >&2
+        else
+            echo 'sandbox-proxy: the project egress policy is not approved; using the base policy only.' >&2
+        fi
+    fi
+fi
+
+{
+    echo '127.0.0.1 localhost'
+    echo '::1 localhost'
+    awk '$1 == "hosts" { print $3 " " $2 }' "$merged"
+} > "$stage/hosts"
+
+if grep -qx 'unrestricted all-destinations' "$merged"; then
+    echo 'sandbox-proxy: the approved project policy is unrestricted; allowing every destination.' >&2
+fi
+
+# One rule per section and port: https and ssh entries allow CONNECT tunnels
+# to their port, http entries allow plain (non-CONNECT) requests to theirs.
+# An approved unrestricted project policy allows everything instead.
+awk -v policy="$merged" '
+    /^@EGRESS_RULES@$/ {
+        default_port["https"] = 443; default_port["http"] = 80; default_port["ssh"] = 22
+        while ((getline entry < policy) > 0) {
+            split(entry, fields, " ")
+            section = fields[1]
+            if (entry == "unrestricted all-destinations") unrestricted = 1
+            if (!(section in default_port) || seen[entry]++) continue
+            split(fields[2], endpoint, ":")
+            key = section "_" (endpoint[2] == "" ? default_port[section] : endpoint[2])
+            if (!(key in names)) order[++count] = key
+            names[key] = names[key] " " endpoint[1]
+        }
+        close(policy)
+        if (unrestricted) { print "http_access allow all"; next }
+        for (i = 1; i <= count; i++) {
+            key = order[i]
+            split(key, rule, "_")
+            print "acl " key "_hosts dstdomain" names[key]
+            print "acl " key "_port port " rule[2]
+            print "http_access allow " key "_hosts " key "_port " (rule[1] == "http" ? "!CONNECT" : "CONNECT")
+        }
+        next
+    }
+    { print }
+' "$template" > "$stage/squid.conf"
+echo 'hosts_file /tmp/hosts' >> "$stage/squid.conf"
+# Stop promptly when the last session ends instead of draining for 30s.
+echo 'shutdown_lifetime 1 seconds' >> "$stage/squid.conf"
+squid -k parse -f "$stage/squid.conf"
+
+printf '%s\n' "$applied" > "$stage/applied-policy"
+mv "$stage/hosts" /tmp/hosts
+mv "$stage/squid.conf" "$rendered_config"
+if [ "$reload" = true ]; then
+    squid -k reconfigure -f "$rendered_config"
+    echo 'sandbox-proxy: reloaded the egress policy.' >&2
+fi
+mv "$stage/applied-policy" /tmp/applied-policy

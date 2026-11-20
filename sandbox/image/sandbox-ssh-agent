@@ -1,0 +1,44 @@
+#!/bin/sh
+# SSH agent entrypoint for the session-ssh-agent image. It serves an empty
+# ssh-agent on the shared socket for sandbox-ssh-unlock to load keys into, and
+# exits when nothing was unlocked within SANDBOX_SSH_START_GRACE seconds, or
+# once the agent holds no keys any more (expired or removed), so the sidecar
+# lives as long as its keys.
+set -eu
+
+socket=/run/ssh-agent/agent.sock
+lifetime=${SANDBOX_SSH_KEY_LIFETIME:-8h}
+interval=${SANDBOX_SSH_CHECK_INTERVAL:-60}
+grace=${SANDBOX_SSH_START_GRACE:-120}
+
+rm -f "$socket"
+ssh-agent -D -a "$socket" -t "$lifetime" >/dev/null &
+agent=$!
+trap 'kill "$agent" 2>/dev/null || :; rm -f "$socket"' EXIT
+trap 'exit 0' TERM INT
+
+loaded=false
+elapsed=0
+while :; do
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+    status=0
+    SSH_AUTH_SOCK=$socket ssh-add -l >/dev/null 2>&1 || status=$?
+    case "$status" in
+        0) loaded=true ;;
+        1)
+            if [ "$loaded" = true ]; then
+                echo 'sandbox-ssh-agent: no keys left; exiting.' >&2
+                exit 0
+            fi
+            if [ "$elapsed" -ge "$grace" ]; then
+                echo "sandbox-ssh-agent: nothing unlocked within ${grace}s; exiting." >&2
+                exit 0
+            fi
+            ;;
+        *)
+            echo 'sandbox-ssh-agent: the agent stopped; exiting.' >&2
+            exit 1
+            ;;
+    esac
+done

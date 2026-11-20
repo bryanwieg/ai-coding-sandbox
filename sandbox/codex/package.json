@@ -1,0 +1,9 @@
+{
+  "name": "codex-sandbox-codex",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Pinned Codex CLI dependency installed in its own Docker layer.",
+  "dependencies": {
+    "@openai/codex": "0.170.0"
+  }
+}

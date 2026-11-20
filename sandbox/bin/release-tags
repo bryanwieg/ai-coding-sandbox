@@ -1,0 +1,61 @@
+#!/bin/sh
+# Version tags for the release workflow. An image's version tag is
+# NAME-VERSION, where VERSION is the agent's own version for the agent images
+# and the release ID (a UTC date such as 2026.11.19) for the others; a later
+# release of the same VERSION appends _1, _2, and so on. Release IDs follow
+# the same scheme for the date.
+#
+#   release-tags next BASE      < tags   Prints BASE if no tag in the list is
+#                                        BASE or BASE_N, else BASE_<max N + 1>.
+#   release-tags last NAME      < tags   Prints NAME's newest version tag, or
+#                                        nothing. The moving NAME-latest and
+#                                        other tags that do not start with a
+#                                        digit after NAME- are ignored.
+#   release-tags fingerprint    < json   Prints a hash of an image config (as
+#                                        imagetools inspect's .Image prints
+#                                        it) that ignores the build time and
+#                                        the commit label, so an image rebuilt
+#                                        with the same content keeps its hash.
+set -eu
+
+usage() {
+    echo 'Usage: release-tags next BASE | last NAME | fingerprint' >&2
+    exit 2
+}
+
+[ "$#" -ge 1 ] || usage
+case "$1" in
+    next)
+        [ "$#" -eq 2 ] && [ -n "$2" ] || usage
+        awk -v base="$2" '
+            BEGIN { found = 0; max = 0 }
+            $0 == base { found = 1; next }
+            index($0, base "_") == 1 {
+                suffix = substr($0, length(base) + 2)
+                if (suffix ~ /^[1-9][0-9]*$/) {
+                    found = 1
+                    if (suffix + 0 > max) max = suffix + 0
+                }
+            }
+            END { print found ? base "_" (max + 1) : base }
+        '
+        ;;
+    last)
+        [ "$#" -eq 2 ] && [ -n "$2" ] || usage
+        awk -v prefix="$2-" '
+            index($0, prefix) == 1 {
+                version = substr($0, length(prefix) + 1)
+                if (version ~ /^[0-9][0-9A-Za-z.-]*(_[1-9][0-9]*)?$/) print
+            }
+        ' | sort -V | tail -n 1
+        ;;
+    fingerprint)
+        [ "$#" -eq 1 ] || usage
+        # A single-platform listing is the config itself; a multi-platform
+        # one maps each platform to its config.
+        jq -cS 'if has("rootfs") then . else (to_entries | first | .value) end
+            | {config: (.config | del(.Labels["org.opencontainers.image.revision"])), rootfs}' |
+            sha256sum | cut -d ' ' -f 1
+        ;;
+    *) usage ;;
+esac

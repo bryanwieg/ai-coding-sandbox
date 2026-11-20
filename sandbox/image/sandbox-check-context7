@@ -1,0 +1,33 @@
+#!/bin/sh
+# Report at launch whether the optional CONTEXT7_API_KEY works, by making one
+# library search through the egress proxy, as the Context7 MCP server does.
+# Problems are highlighted but never stop the launch; the key is optional.
+set -u
+
+url='https://context7.com/api/v2/libs/search?query=status&libraryName=react'
+
+warn() {
+    if [ -t 2 ]; then
+        printf '\033[1;31m%s\033[0m\n' "$*" >&2
+    else
+        printf '%s\n' "$*" >&2
+    fi
+}
+
+if [ -z "${CONTEXT7_API_KEY:-}" ]; then
+    echo 'Context7: no API key; using anonymous rate limits.' >&2
+    exit 0
+fi
+
+# The header is read from stdin, so the key never appears in a process list.
+status=$(printf 'Authorization: Bearer %s\n' "$CONTEXT7_API_KEY" |
+    curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 \
+        --header @- "$url")
+case "$status" in
+    200) echo 'Context7: API key accepted.' >&2 ;;
+    401|403) warn 'WARNING: Context7 rejected CONTEXT7_API_KEY; documentation lookups will fail until the key is fixed or unset.' ;;
+    429) warn 'WARNING: Context7 reports the API key is rate limited or over quota.' ;;
+    000) warn 'WARNING: Context7 is unreachable through the egress proxy; the API key was not checked.' ;;
+    *) warn "WARNING: Context7 API key check returned HTTP $status; documentation lookups may fail." ;;
+esac
+exit 0

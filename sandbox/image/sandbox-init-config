@@ -1,0 +1,148 @@
+#!/bin/sh
+# Creates a project's .sandbox/ folder for the sandbox's Compose file. It
+# runs once per project, before .sandbox/env exists, from the project root:
+#
+#   docker run --rm --pull=always -it --user "$(id -u):$(id -g)" -v "$PWD:/project" \
+#     -e HOST_PWD="$PWD" ghcr.io/bryanwieg/ai-coding-sandbox:init-latest \
+#     sandbox-init-config [--reference PATH] [--force]
+#
+# References are opt-in with --reference. It writes .sandbox/env (settings)
+# and, when missing, .sandbox/agent.env (secrets for the agents, asking for
+# an optional Context7 API key), both mode 600 and ignored by Git, plus
+# templates that it never overwrites. --force replaces only .sandbox/env.
+set -eu
+
+dir=${SANDBOX_INIT_DIR:-/project}
+compose_ref=${SANDBOX_COMPOSE_REF:-ghcr.io/bryanwieg/ai-coding-sandbox-compose:latest}
+host_pwd=${HOST_PWD:-}
+host_pwd=${host_pwd%/}
+reference=
+force=false
+
+usage() {
+    echo 'Usage: sandbox-init-config [--reference PATH] [--force]' >&2
+    exit 2
+}
+fail() {
+    printf 'sandbox-init-config: %s\n' "$1" >&2
+    exit 1
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --reference) [ "$#" -ge 2 ] || usage; reference=$2; shift 2 ;;
+        --force) force=true; shift ;;
+        *) usage ;;
+    esac
+done
+
+case "$host_pwd" in
+    /*) ;;
+    *) fail "set HOST_PWD to the absolute project folder: -e HOST_PWD=\"\$PWD\"." ;;
+esac
+[ -d "$dir" ] || fail "mount the project at $dir: -v \"\$PWD:$dir\"."
+config=$dir/.sandbox
+if [ -e "$config/env" ] && [ "$force" = false ]; then
+    fail '.sandbox/env already exists; edit it, or pass --force to replace it.'
+fi
+
+if [ "$reference" = . ]; then
+    reference=
+fi
+if [ "$reference" != / ]; then reference=${reference%/}; fi
+case "$reference" in
+    ''|/*) ;;
+    *) fail "the reference root must be an absolute path: $reference" ;;
+esac
+
+name=$(printf '%s' "${host_pwd##*/}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-' | sed 's/^[^a-z0-9]*//')
+[ -n "$name" ] || name=sandbox
+
+mkdir -p "$config/ssh"
+[ -e "$config/.gitignore" ] || printf '# Holds secrets; never commit it.\nenv\n' > "$config/.gitignore"
+if ! grep -Fxq agent.env "$config/.gitignore"; then
+    printf '\nagent.env\n' >> "$config/.gitignore"
+fi
+if [ ! -e "$config/agent.env" ]; then
+    context7_key=${CONTEXT7_API_KEY:-}
+    if [ -z "$context7_key" ]; then
+        printf 'Context7 API key (optional, input hidden; Enter to skip): ' >&2
+        if [ -t 0 ]; then
+            stty -echo
+            read -r context7_key || context7_key=
+            stty echo
+            echo >&2
+        else
+            read -r context7_key || context7_key=
+        fi
+    fi
+    (
+        umask 077
+        printf '# Environment variables and secrets for both agents. Values are literal; do\n# not quote them.\n# Optional key for Context7'"'"'s rate limits.\nCONTEXT7_API_KEY=%s\n# MY_SERVICE_TOKEN=your-token\n' "$context7_key" > "$config/agent.env"
+    )
+fi
+[ -e "$config/egress-policy.yaml" ] || cat > "$config/egress-policy.yaml" <<'EOF'
+# Egress this project adds to the base policy (model APIs, GitHub, Docker
+# Hub). Additions apply only after you approve them:
+#   docker compose --env-file .sandbox/env run --rm trust
+#
+# Entries are NAME or NAME:PORT; bare names use the section's default port.
+#
+# https:                     # CONNECT, port 443 by default
+#   - api.example.com
+#   - api.example.com:8443
+# http:                      # plain HTTP, port 80 by default
+#   - example.com:8888
+# ssh:                       # CONNECT, port 22 by default
+#   - host.example.com
+# hosts:
+#   host.example.com: 192.0.2.10
+#
+# Allow every host and port through the proxy instead of the lists above:
+# unrestricted_out: true
+EOF
+[ -e "$config/ssh/config" ] || printf '# SSH client settings for this project'"'"'s sessions.\n' > "$config/ssh/config"
+[ -e "$config/ssh/known_hosts" ] || : > "$config/ssh/known_hosts"
+
+(
+    umask 077
+    cat > "$config/.env.tmp" <<EOF
+# Sandbox settings for this project, created by sandbox-init-config. Keep
+# secrets in agent.env instead.
+# The separator keeps the oci:// reference whole.
+COMPOSE_PATH_SEPARATOR=,
+COMPOSE_FILE=oci://$compose_ref
+# Names this project's volumes and its folder in sessions, /workspace/<name>;
+# changing it starts the project with empty caches and agent history.
+COMPOSE_PROJECT_NAME=$name
+# docker: the session daemon; publish: ports to the host; ssh: SSH with
+# your SSH keys (passphrases optional).
+COMPOSE_PROFILES=docker,publish
+SANDBOX_UID=$(id -u)
+SANDBOX_GID=$(id -g)
+# Optional host folder, read-only at /reference; leave empty for project only.
+SANDBOX_REFERENCE=$reference
+# TCP ports published from the session daemon: a port or a range such as
+# 8000-8009. More slots: SANDBOX_PUBLISH_PORTS_2 and _3, and for UDP
+# SANDBOX_PUBLISH_UDP_PORTS, _UDP_PORTS_2 and _UDP_PORTS_3.
+SANDBOX_PUBLISH_PORTS=
+# 0.0.0.0 also publishes them to your network.
+#SANDBOX_PUBLISH_ADDRESS=127.0.0.1
+# direct: containers in the session daemon get a route out that bypasses
+# the egress proxy (any host, port and protocol). Agents still use the proxy.
+#SANDBOX_DAEMON_EGRESS=direct
+# persistent: keep the session daemon's images, containers, volumes and
+# build cache between sessions instead of wiping them when the last one ends.
+#SANDBOX_DOCKER_DATA=persistent
+#SANDBOX_DOCKER_MEMORY=4g
+#SANDBOX_SSH_KEY_DIR=
+EOF
+)
+chmod 0600 "$config/.env.tmp"
+mv "$config/.env.tmp" "$config/env"
+
+cat >&2 <<EOF
+Created .sandbox/ for $host_pwd (reference folder: ${reference:-none}).
+Start a session from this folder with:
+  docker compose --env-file .sandbox/env run --rm claude   (or codex)
+EOF

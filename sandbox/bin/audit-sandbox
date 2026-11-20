@@ -1,0 +1,330 @@
+#!/bin/sh
+# Runtime audit of the sandbox: starts real sessions from compose.session.yaml
+# plus compose.dev.yaml (images built from this checkout) in a disposable
+# project, with disposable shared volumes, and verifies the boundary from
+# inside: identity and capabilities, read-only mounts, egress only through the
+# proxy's allowlist, the session daemon's isolation, its opt-in direct egress
+# (containers route out directly while the agent still cannot), project bind
+# mounts and a published port reaching the host, and the daemon, forwarder and proxy
+# stopping once the session ends. Runs locally; GitHub's runners cannot
+# start the daemon, so CI passes --no-docker, which audits sessions without
+# the docker and publish profiles. Run it after changing networks, mounts,
+# privileges or the proxy.
+# Session scripts are single-quoted on purpose; see session() below.
+# shellcheck disable=SC2016
+set -eu
+
+case "${1:-}" in
+    '') audit_docker=true ;;
+    --no-docker) audit_docker=false ;;
+    *) echo "Usage: $0 [--no-docker]" >&2; exit 2 ;;
+esac
+
+root_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+# Pulled through the proxy from Docker Hub, which the base policy allows.
+busybox=busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+project_name="sandbox-session-audit-$$"
+audit_dir=$(mktemp -d)
+reference=$audit_dir/reference
+project=$reference/src/demo
+failures=0
+
+pass() { printf 'ok   %s\n' "$1"; }
+fail() { printf 'FAIL %s\n' "$1" >&2; failures=$((failures + 1)); }
+
+COMPOSE_PATH_SEPARATOR=,
+COMPOSE_FILE="$root_dir/compose.session.yaml,$root_dir/compose.dev.yaml,$audit_dir/volumes.yaml"
+COMPOSE_PROJECT_NAME=$project_name
+if [ "$audit_docker" = true ]; then
+    COMPOSE_PROFILES=docker,publish
+    session_services='egress-proxy docker publish'
+else
+    COMPOSE_PROFILES=
+    session_services=egress-proxy
+fi
+SANDBOX_PUBLISH_PORTS=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+export COMPOSE_PATH_SEPARATOR COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES SANDBOX_PUBLISH_PORTS
+port=$SANDBOX_PUBLISH_PORTS
+
+cleanup() {
+    (cd "$project" 2>/dev/null && docker compose --env-file .sandbox/env --profile '*' \
+        down --volumes --remove-orphans >/dev/null 2>&1) || true
+    for volume in claude-state codex-state trust; do
+        docker volume rm "$project_name-$volume" >/dev/null 2>&1 || true
+    done
+    # Containers in the session daemon may leave files owned by subordinate IDs.
+    docker run --rm -v "$audit_dir:/audit" "$busybox" rm -rf /audit/reference >/dev/null 2>&1 || true
+    rm -rf "$audit_dir"
+}
+trap cleanup EXIT HUP INT TERM
+
+"$root_dir/bin/check-sandbox"
+
+# The shared volumes are external in the release file; the audit uses its own.
+mkdir -p "$project"
+cat > "$audit_dir/volumes.yaml" <<EOF
+volumes:
+  claude-state: {name: $project_name-claude-state, external: true}
+  codex-state: {name: $project_name-codex-state, external: true}
+  trust: {name: $project_name-trust, external: true}
+EOF
+for volume in claude-state codex-state trust; do
+    docker volume create "$project_name-$volume" >/dev/null
+done
+printf 'reference only\n' > "$reference/README"
+printf '\n\n' | SANDBOX_INIT_DIR=$project HOST_PWD=$project \
+    "$root_dir/image/sandbox-init-config" --reference "$reference" >/dev/null
+cd "$project"
+cat > .sandbox/agent.env <<'EOF'
+SANDBOX_AUDIT_TOKEN=literal-$TOKEN-${UNSET_TOKEN}-#suffix
+HTTPS_PROXY=http://invalid.example
+EOF
+
+# session AGENT SCRIPT: runs SCRIPT in a session of AGENT, without a terminal.
+# SCRIPT runs inside the container, so it is single-quoted and receives host
+# values as AUDIT_* variables.
+AUDIT_UID=$(id -u)
+AUDIT_PORT=$port
+AUDIT_BUSYBOX=$busybox
+AUDIT_PROJECT=/workspace/$project_name
+export AUDIT_UID AUDIT_PORT AUDIT_BUSYBOX AUDIT_PROJECT
+session() {
+    # Images were built explicitly below. The dev overlay's pull_policy:
+    # build would rebuild here, letting an idle proxy stop before launch.
+    docker compose --env-file .sandbox/env run --pull never --rm -T \
+        -e AUDIT_UID -e AUDIT_PORT -e AUDIT_BUSYBOX -e AUDIT_PROJECT "$1" sh -ceu "$2"
+}
+
+# Build every image before the first session. A build between sessions can
+# outlast the services' idle window, so the proxy would stop while the next
+# launch starts.
+# shellcheck disable=SC2086
+docker compose --env-file .sandbox/env build --quiet claude claude-state-init codex codex-state-init $session_services
+
+for agent in claude codex; do
+    printf 'Auditing a %s session...\n' "$agent" >&2
+    # Also leaves a mark in /tmp and in the state volume for the next session.
+    if session "$agent" '
+        for hook in /usr/local/libexec/sandbox/init.d/*; do
+            [ ! -x "$hook" ] || "$hook" >/dev/null 2>&1 </dev/null || { echo "hook failed: $hook" >&2; exit 1; }
+        done
+        mkdir -p "$XDG_CONFIG_HOME/ponytail/band"
+        printf "key,name\naudit,task\n" > "$XDG_CONFIG_HOME/ponytail/band/audit.csv"
+        touch /tmp/audit-previous-session "${CLAUDE_CONFIG_DIR:-$CODEX_HOME}/audit-state"' 2>&1; then
+        pass "$agent: the startup hooks accept the session"
+    else
+        fail "$agent: a startup hook refused the session"
+    fi
+
+    output=$(session "$agent" '
+        test "$(id -u)" = "$AUDIT_UID" && test "$(id -u)" -ne 0 && echo identity
+        test "$(awk "/^CapEff/ {print \$2}" /proc/self/status)" = 0000000000000000 && echo no-capabilities
+        test "$(awk "/^NoNewPrivs/ {print \$2}" /proc/self/status)" = 1 && echo no-new-privileges
+        test "$PWD" = "$AUDIT_PROJECT" && echo working-directory
+        test "$SANDBOX_AUDIT_TOKEN" = "literal-\$TOKEN-\${UNSET_TOKEN}-#suffix" &&
+            test "$HTTPS_PROXY" = http://egress-proxy:3128 && echo agent-environment
+        touch project-file && rm project-file && echo project-writable
+        ! touch /reference/README 2>/dev/null && grep -q "reference only" /reference/README && echo reference-read-only
+        ! touch .sandbox/env 2>/dev/null && echo config-read-only
+        ! touch /etc/audit 2>/dev/null && echo root-read-only
+        for directory in /run "$HOME" "$HOME/.ssh" /dev/shm; do
+            ! touch "$directory/.audit" 2>/dev/null || exit 1
+        done && echo home-read-only
+        test ! -e /tmp/audit-previous-session && echo tmp-reset
+        test -f "${CLAUDE_CONFIG_DIR:-$CODEX_HOME}/audit-state" && echo state-persists
+        test "$XDG_CONFIG_HOME" = "${CLAUDE_CONFIG_DIR:-$CODEX_HOME}/xdg" &&
+            grep -Fxq audit,task "$XDG_CONFIG_HOME/ponytail/band/audit.csv" && echo plugin-config-persists
+        test ! -e /var/run/docker.sock && test ! -e /run/docker.sock && echo no-host-socket
+        # /tmp is noexec; go test runs its binary from GOTMPDIR in the
+        # cache volume of the project. Kept short (no cgo or -race, which
+        # test-go.sh covers) so the session daemon does not idle out.
+        go_project=$(mktemp -d) && cd "$go_project" && go mod init audit.test/probe >/dev/null 2>&1 &&
+            printf "package probe\n\nimport \"testing\"\n\nfunc TestCache(t *testing.T) {}\n" > probe_test.go &&
+            go test . >/dev/null && test "$(go env GOTMPDIR)" = /cache/go/tmp && cd - >/dev/null && echo go-cache-volume
+        http_code=$(curl -sS --max-time 20 -o /dev/null -w "%{http_code}" https://api.github.com/zen)
+        if [ "$http_code" = 200 ]; then
+            echo allowlisted-https
+        else
+            echo "allowlisted HTTPS returned HTTP $http_code" >&2
+        fi
+        ! curl -s -o /dev/null --max-time 10 https://example.com && echo unlisted-https-refused
+        ! curl -s -o /dev/null --max-time 10 --noproxy "*" https://api.github.com/zen && echo no-direct-route
+    ' 2>&1 || :)
+    output_reported=false
+    for expected in identity no-capabilities no-new-privileges working-directory agent-environment project-writable \
+        reference-read-only config-read-only root-read-only home-read-only tmp-reset state-persists plugin-config-persists \
+        no-host-socket go-cache-volume allowlisted-https \
+        unlisted-https-refused no-direct-route; do
+        if printf '%s\n' "$output" | grep -Fxq "$expected"; then
+            pass "$agent: $expected"
+        else
+            fail "$agent: $expected"
+            if [ "$output_reported" = false ]; then
+                printf '%s audit output:\n%s\n' "$agent" "$output" >&2
+                output_reported=true
+            fi
+        fi
+    done
+done
+
+# Changing or removing the reference must never change project mounting.
+mkdir "$audit_dir/unrelated"
+printf 'unrelated reference\n' > "$audit_dir/unrelated/README"
+for agent in claude codex; do
+    for mode in unrelated none; do
+        if [ "$mode" = unrelated ]; then
+            SANDBOX_REFERENCE=$audit_dir/unrelated
+            script='test -r /reference/README && ! touch /reference/README 2>/dev/null'
+        else
+            SANDBOX_REFERENCE=
+            script='test ! -d /reference && test ! -s /reference'
+        fi
+        export SANDBOX_REFERENCE
+        if session "$agent" "$script"' &&
+            test "$PWD" = "$AUDIT_PROJECT" &&
+            touch reference-regression && rm reference-regression &&
+            /usr/local/libexec/sandbox/init.d/00-session' 2>&1; then
+            pass "$agent: $mode reference preserves the writable project and passes startup"
+        else
+            fail "$agent: $mode reference broke the session"
+        fi
+    done
+done
+unset SANDBOX_REFERENCE
+
+if [ "$audit_docker" = true ]; then
+    # The daemon is rootless, needs the client certificate, maps inner root to
+    # the user, sees only the project, offers containers its socket at the
+    # path the session names (absent from the session itself), and reaches the Internet only through the
+    # proxy, which containers get for HTTPS only.
+    printf 'Auditing the session daemon...\n' >&2
+    output=$(session claude '
+        # A command override skips the start hooks; run the Docker client one.
+        /usr/local/libexec/sandbox/init.d/05-docker-client
+        docker pull -q "$AUDIT_BUSYBOX" >/dev/null
+        docker info --format "{{json .SecurityOptions}}" | grep -Fq name=rootless && echo rootless
+        ! curl -s --cacert "$DOCKER_CERT_PATH/ca.pem" https://docker:2376/version >/dev/null 2>&1 && echo certificate-required
+        test "$(docker run --rm "$AUDIT_BUSYBOX" cat /proc/self/uid_map | awk "NR == 1 { print \$1 \":\" \$2 }")" = "0:$AUDIT_UID" &&
+            docker run --rm -v "$PWD:/project" "$AUDIT_BUSYBOX" touch /project/inner-write &&
+            test "$(stat -c %u inner-write)" = "$AUDIT_UID" && rm inner-write && echo root-is-user
+        daemon_ls() { docker run --rm -v /:/daemon-root "$AUDIT_BUSYBOX" ls -A "/daemon-root$1"; }
+        test "$(daemon_ls /workspace)" = "${AUDIT_PROJECT#/workspace/}" && echo only-the-project
+        test ! -e "$SANDBOX_DOCKER_SOCKET" &&
+            docker run --rm -v "$SANDBOX_DOCKER_SOCKET:/var/run/docker.sock" "$AUDIT_BUSYBOX" test -S /var/run/docker.sock &&
+            echo daemon-socket
+        ! docker run --rm "$AUDIT_BUSYBOX" wget -q -T 10 -O /dev/null http://example.com 2>/dev/null && echo no-direct-route
+        printf "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n" |
+            docker run --rm -i "$AUDIT_BUSYBOX" nc -w 10 egress-proxy 3128 | head -n 1 | grep -Fq " 403 " && echo unlisted-refused
+        env=$(docker run --rm "$AUDIT_BUSYBOX" env)
+        printf "%s\n" "$env" | grep -Fxq "HTTPS_PROXY=$HTTPS_PROXY" && ! printf "%s\n" "$env" | grep -iq "^http_proxy=" && echo https-proxy-only
+        docker network create audit-net >/dev/null
+        docker run -d --name audit-peer --network audit-net "$AUDIT_BUSYBOX" httpd -f -p 80 -h /etc >/dev/null
+        for _ in $(seq 10); do
+            docker run --rm --network audit-net "$AUDIT_BUSYBOX" wget -q -T 5 -O /dev/null http://audit-peer/hostname 2>/dev/null &&
+                { echo plain-http-between-containers; break; }
+            sleep 1
+        done
+    ' 2>&1 || :)
+    for expected in rootless certificate-required root-is-user only-the-project daemon-socket no-direct-route \
+        unlisted-refused https-proxy-only plain-http-between-containers; do
+        if printf '%s\n' "$output" | grep -Fxq "$expected"; then
+            pass "daemon: $expected"
+        else
+            fail "daemon: $expected"
+        fi
+    done
+
+    # A project bind mount, and a published port reaching the host while the
+    # session runs. The session waits for the host's request, then ends.
+    printf 'bind-mount-ok\n' > marker
+    session claude '
+        docker pull -q "$AUDIT_BUSYBOX" >/dev/null
+        docker run --rm -v "$PWD:/project:ro" "$AUDIT_BUSYBOX" cat /project/marker > daemon-bind
+        docker run -d --name web -p "$AUDIT_PORT:80" -v "$PWD:/srv:ro" "$AUDIT_BUSYBOX" httpd -f -p 80 -h /srv >/dev/null
+        if docker run --rm --privileged "$AUDIT_BUSYBOX" true >/dev/null 2>&1; then
+            echo allowed > privileged
+        else
+            echo refused > privileged
+        fi
+        touch ready
+        for _ in $(seq 90); do [ -e finished ] && break; sleep 1; done
+        docker info >/dev/null && touch alive
+    ' > "$audit_dir/daemon.log" 2>&1 &
+    session_pid=$!
+    for _ in $(seq 300); do [ -e ready ] && break; sleep 1; done
+    if [ "$(cat daemon-bind 2>/dev/null)" = bind-mount-ok ]; then
+        pass 'containers can bind-mount the project'
+    else
+        fail "containers cannot bind-mount the project: $(cat "$audit_dir/daemon.log")"
+    fi
+    if [ "$(cat privileged 2>/dev/null)" = refused ]; then
+        pass 'privileged containers are refused'
+    else
+        fail "privileged containers: $(cat privileged 2>/dev/null || echo unknown)"
+    fi
+    # Longer than the daemon's idle cutoff: only the session's lease keeps it up.
+    sleep 25
+    if [ "$(curl -s --max-time 10 "http://127.0.0.1:$port/marker")" = bind-mount-ok ]; then
+        pass "a published port reaches the host at 127.0.0.1:$port"
+    else
+        fail "the published port $port did not reach the container"
+    fi
+    touch finished
+    wait "$session_pid" || fail "the Docker session failed: $(cat "$audit_dir/daemon.log")"
+    if [ -e alive ]; then
+        pass 'the session lease keeps the daemon up while the session is idle'
+    else
+        fail 'the daemon stopped while the session was still running'
+    fi
+    if docker run --rm --network "${project_name}_session-publish" "$busybox" \
+        nc -w 5 8.8.8.8 53 </dev/null >/dev/null 2>&1; then
+        fail 'the publish network reached the Internet'
+    else
+        pass 'the publish network has no route out'
+    fi
+
+    # Opt-in direct egress: containers reach unlisted hosts over any protocol
+    # without the proxy, while the agent itself still has only the proxy.
+    printf 'Auditing direct daemon egress...\n' >&2
+    output=$(SANDBOX_DAEMON_EGRESS=direct session claude '
+        /usr/local/libexec/sandbox/init.d/05-docker-client
+        test "$(cat "$DOCKER_CONFIG/config.json")" = "{}" && echo containers-unproxied
+        /usr/local/libexec/sandbox/init.d/00-session 2>&1 | grep -Fq "bypass the egress proxy" && echo startup-warning
+        docker pull -q "$AUDIT_BUSYBOX" >/dev/null
+        docker run --rm "$AUDIT_BUSYBOX" wget -q -T 10 -O /dev/null http://example.com && echo container-direct-route
+        docker run --rm "$AUDIT_BUSYBOX" nslookup example.com 1.1.1.1 >/dev/null && echo container-direct-udp
+        ! curl -s -o /dev/null --max-time 10 --noproxy "*" https://api.github.com/zen && echo agent-no-direct-route
+        ! curl -s -o /dev/null --max-time 10 https://example.com && echo agent-allowlist-kept
+    ' 2>&1 || :)
+    for expected in containers-unproxied startup-warning container-direct-route container-direct-udp \
+        agent-no-direct-route agent-allowlist-kept; do
+        if printf '%s\n' "$output" | grep -Fxq "$expected"; then
+            pass "direct egress: $expected"
+        else
+            fail "direct egress: $expected"
+        fi
+    done
+fi
+
+# A session shorter than the proxy's idle check may go unseen, and the proxy
+# then stops only at the end of its 120-second start grace.
+stopped=false
+for _ in $(seq 150); do
+    # shellcheck disable=SC2086
+    if [ -z "$(docker compose --env-file .sandbox/env ps --quiet $session_services)" ]; then
+        stopped=true
+        break
+    fi
+    sleep 1
+done
+if [ "$stopped" = true ]; then
+    pass "the session services stop once the session ends: $session_services"
+else
+    fail "a session service kept running after the session ended: $session_services"
+    docker compose --env-file .sandbox/env ps --all >&2
+    # shellcheck disable=SC2086
+    docker compose --env-file .sandbox/env logs --tail 20 $session_services >&2
+fi
+
+[ "$failures" -eq 0 ] || { echo "$failures check(s) failed." >&2; exit 1; }
+echo 'Sandbox runtime audit passed.'

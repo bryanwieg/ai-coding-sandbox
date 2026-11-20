@@ -1,0 +1,54 @@
+version: 2
+
+multi-ecosystem-groups:
+  weekly-maintenance:
+    schedule:
+      interval: weekly
+
+updates:
+  - package-ecosystem: pip
+    directory: /sandbox
+    patterns: ["*"]
+    multi-ecosystem-group: weekly-maintenance
+
+  - package-ecosystem: npm
+    directory: /sandbox
+    patterns: ["*"]
+    multi-ecosystem-group: weekly-maintenance
+
+  - package-ecosystem: npm
+    directory: /sandbox/codex
+    schedule:
+      interval: daily
+      time: "09:00"
+      timezone: America/Los_Angeles
+    cooldown:
+      exclude:
+        - "@openai/codex"
+
+  - package-ecosystem: npm
+    directory: /sandbox/claude
+    # Dependabot allows at most one scheduled run a day.
+    schedule:
+      interval: daily
+      time: "14:00"
+      timezone: America/Chicago
+    cooldown:
+      exclude:
+        - "@anthropic-ai/claude-code"
+
+  - package-ecosystem: docker
+    # Includes the golang image supplying Go (its full version tag and digest).
+    directory: /sandbox
+    patterns: ["*"]
+    multi-ecosystem-group: weekly-maintenance
+
+  - package-ecosystem: docker-compose
+    directory: /sandbox
+    patterns: ["*"]
+    multi-ecosystem-group: weekly-maintenance
+
+  - package-ecosystem: github-actions
+    directory: /
+    patterns: ["*"]
+    multi-ecosystem-group: weekly-maintenance

@@ -1,0 +1,25 @@
+#!/bin/sh
+# Sessions with the docker profile set DOCKER_CONFIG. The CLI
+# then passes the egress proxy to every build and container it starts, since
+# the sandbox daemon's containers have no other route to the Internet. Only
+# HTTPS is proxied: the proxy allows plain HTTP only to names in the project's
+# http list, so an HTTP proxy would mostly break plain HTTP between containers.
+# With SANDBOX_DAEMON_EGRESS=direct the containers have their own route out,
+# and a proxy would only refuse destinations that route allows.
+set -eu
+
+[ -n "${DOCKER_CONFIG:-}" ] || exit 0
+
+mkdir -p "$DOCKER_CONFIG"
+if [ "${SANDBOX_DAEMON_EGRESS:-proxied}" = direct ]; then
+    echo '{}' > "$DOCKER_CONFIG/config.json"
+    exit 0
+fi
+jq -n --arg proxy "$HTTPS_PROXY" '{
+    proxies: {
+        default: {
+            httpsProxy: $proxy,
+            noProxy: "localhost,127.0.0.1"
+        }
+    }
+}' > "$DOCKER_CONFIG/config.json"

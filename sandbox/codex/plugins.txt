@@ -1,0 +1,6 @@
+# One Codex plugin selector per line. Changes trigger synchronization on the
+# next authenticated sandbox launch.
+github@openai-curated
+codex-security@openai-curated
+mattpocock-skills@openai-curated-remote
+engineering-suite-ponytail@openai-curated-remote

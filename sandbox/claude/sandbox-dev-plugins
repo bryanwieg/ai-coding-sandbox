@@ -1,0 +1,44 @@
+#!/bin/sh
+# Names the development plugin repository once, in Claude's shared state, so
+# every project loads it.
+#   sandbox-dev-plugins set owner/repository
+#   sandbox-dev-plugins unset
+#   sandbox-dev-plugins show
+# The clone appears on the next launch; unset leaves an existing clone and its
+# local work in place.
+set -eu
+
+state_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sandbox/dev-plugin-repo"
+
+usage() {
+    echo 'Usage: sandbox-dev-plugins set owner/repository | unset | show' >&2
+    exit 2
+}
+
+case "${1:-}" in
+    set)
+        [ "$#" -eq 2 ] || usage
+        if ! printf '%s\n' "$2" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$'; then
+            echo "Use owner/repository: $2" >&2
+            exit 2
+        fi
+        mkdir -p "${state_file%/*}"
+        printf '%s\n' "$2" > "$state_file.tmp"
+        mv "$state_file.tmp" "$state_file"
+        echo "Development plugins will load from $2 from the next launch."
+        ;;
+    unset)
+        [ "$#" -eq 1 ] || usage
+        rm -f "$state_file"
+        echo 'Development plugins are no longer loaded; the existing clone is kept.'
+        ;;
+    show)
+        [ "$#" -eq 1 ] || usage
+        if [ -s "$state_file" ]; then
+            sed -n '1p' "$state_file"
+        else
+            echo 'No development plugin repository is set.'
+        fi
+        ;;
+    *) usage ;;
+esac

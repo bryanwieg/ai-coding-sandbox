@@ -1,0 +1,25 @@
+#!/bin/sh
+# Accept the one-time bypass-permissions dialog. The container is the security
+# boundary, as with Codex's automatic approval, so Claude Code's own permission
+# prompts and bubblewrap sandbox stay off. Other user settings are preserved.
+set -eu
+
+state_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+settings_file="$state_dir/settings.json"
+
+mkdir -p "$state_dir"
+temporary_file=$(mktemp "$state_dir/.settings.json.XXXXXX")
+
+if [ -s "$settings_file" ]; then
+    source_file=$settings_file
+else
+    source_file=/dev/null
+fi
+
+if jq -s '(.[0] // {}) | .skipDangerousModePermissionPrompt = true' \
+    "$source_file" > "$temporary_file"; then
+    mv "$temporary_file" "$settings_file"
+else
+    rm -f "$temporary_file"
+    echo "Unable to update $settings_file; Claude Code will ask to confirm bypass mode." >&2
+fi

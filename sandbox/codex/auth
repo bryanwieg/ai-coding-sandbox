@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+case "$1" in
+    status) exec codex login status ;;
+    login)
+        echo 'Complete Codex authentication using the URL and device code below.' >&2
+        exec codex login --device-auth
+        ;;
+    logout) exec codex logout ;;
+esac
+echo "Unsupported authentication action: $1" >&2
+exit 2

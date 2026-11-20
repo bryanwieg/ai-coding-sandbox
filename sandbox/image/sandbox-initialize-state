@@ -1,0 +1,52 @@
+#!/bin/sh
+# Prepare an agent's named state volume. Ownership is normalized to the
+# runtime user, so this is safe to re-run. SANDBOX_STATE_CHOWN=if-needed
+# skips that recursive walk when the volume root already has the owner.
+#
+# SANDBOX_OWNED_DIRS, when set, lists further volume roots separated by
+# spaces (such as the project's cache volume); each gets the
+# same owner, with the same SANDBOX_STATE_CHOWN rule.
+#
+# SANDBOX_DOCKER_CERTS_DIR, when set, is the project's daemon certificate
+# volume. Agents mount only its client/ folder, which must exist even when the
+# daemon has never run, so it is created with the permissions the daemon
+# image gives it.
+set -eu
+
+certs_dir=${SANDBOX_DOCKER_CERTS_DIR:-}
+if [ -n "$certs_dir" ]; then
+    chmod 1777 "$certs_dir"
+    install -d -m 1777 "$certs_dir/client"
+fi
+
+state_dir=${SANDBOX_STATE_DIR:?Set SANDBOX_STATE_DIR to the agent state directory}
+owner=${SANDBOX_STATE_OWNER:-1000:1000}
+chown_mode=${SANDBOX_STATE_CHOWN:-always}
+
+case "$chown_mode" in
+    always | if-needed) ;;
+    *) echo "Unsupported SANDBOX_STATE_CHOWN: $chown_mode" >&2; exit 1 ;;
+esac
+
+mkdir -p "$state_dir"
+
+if find "$state_dir" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+    echo "Agent state already exists in $state_dir; leaving it unchanged."
+else
+    echo "The agent state volume at $state_dir is ready for a new login."
+fi
+
+# give DIR: hands DIR to the runtime user, skipping the recursive walk when
+# SANDBOX_STATE_CHOWN=if-needed and its root already has the owner.
+give() {
+    if [ "$chown_mode" = if-needed ] && [ "$(stat -c %u:%g "$1")" = "$owner" ]; then
+        return 0
+    fi
+    chown -Rh "$owner" "$1"
+}
+
+give "$state_dir"
+for dir in ${SANDBOX_OWNED_DIRS:-}; do
+    mkdir -p "$dir"
+    give "$dir"
+done

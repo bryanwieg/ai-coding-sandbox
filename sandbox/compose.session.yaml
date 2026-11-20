@@ -1,0 +1,446 @@
+# Self-contained sandbox session. CI publishes this file, with every image
+# pinned by digest, as oci://ghcr.io/bryanwieg/ai-coding-sandbox-compose; a
+# project's .sandbox/env (written by sandbox-init-config) points COMPOSE_FILE at
+# it. Start a session from the project root:
+#
+#   docker compose --env-file .sandbox/env run --rm claude    # or codex
+#
+# Bind sources use ${PWD}, because relative paths in a remote Compose file
+# resolve inside Compose's download cache, not the project.
+#
+# Profiles: claude and codex (selected by the run command), docker (the
+# session daemon), publish (ports to the host), ssh (the ssh-agent sidecar and
+# ssh-unlock), and tools (trust and the migrate-*-state services). Shared
+# state lives in external volumes created once per machine; see the sandbox
+# README.
+#
+# SANDBOX_DAEMON_EGRESS=direct (set on the host, in .sandbox/env) gives the
+# session daemon, and so the containers it runs, a direct route out instead of
+# the proxy alone. Agents stay on the internal network either way.
+# SANDBOX_DOCKER_DATA=persistent keeps the daemon's images, containers,
+# volumes and build cache in this project's docker-data volume between
+# sessions instead of wiping them.
+
+x-agent-environment: &agent-environment
+  HTTP_PROXY: "http://egress-proxy:3128"
+  HTTPS_PROXY: "http://egress-proxy:3128"
+  NO_PROXY: "localhost,127.0.0.1,egress-proxy,docker"
+  http_proxy: "http://egress-proxy:3128"
+  https_proxy: "http://egress-proxy:3128"
+  no_proxy: "localhost,127.0.0.1,egress-proxy,docker"
+  SANDBOX_SESSION: "1"
+  SANDBOX_REFERENCE: "${SANDBOX_REFERENCE:-}"
+  HOST_PWD: "${PWD:?Start from the project folder}"
+  SANDBOX_PROFILES: "${COMPOSE_PROFILES:-}"
+  SANDBOX_PUBLISH_PORTS: "${SANDBOX_PUBLISH_PORTS:-}"
+  SANDBOX_PUBLISH_PORTS_2: "${SANDBOX_PUBLISH_PORTS_2:-}"
+  SANDBOX_PUBLISH_PORTS_3: "${SANDBOX_PUBLISH_PORTS_3:-}"
+  SANDBOX_PUBLISH_UDP_PORTS: "${SANDBOX_PUBLISH_UDP_PORTS:-}"
+  SANDBOX_PUBLISH_UDP_PORTS_2: "${SANDBOX_PUBLISH_UDP_PORTS_2:-}"
+  SANDBOX_PUBLISH_UDP_PORTS_3: "${SANDBOX_PUBLISH_UDP_PORTS_3:-}"
+  SANDBOX_PUBLISH_ADDRESS: "${SANDBOX_PUBLISH_ADDRESS:-127.0.0.1}"
+  SANDBOX_DAEMON_EGRESS: "${SANDBOX_DAEMON_EGRESS:-proxied}"
+  SANDBOX_DOCKER_DATA: "${SANDBOX_DOCKER_DATA:-ephemeral}"
+  SANDBOX_SSH_KEY_DIR: "${SANDBOX_SSH_KEY_DIR:-${HOME}/.config/ai-coding-sandbox/ssh-keys}"
+  SSH_AUTH_SOCK: /run/ssh-agent/agent.sock
+  # sandbox-start clears these when the docker profile is off.
+  DOCKER_HOST: "tcp://docker:2376"
+  DOCKER_TLS_VERIFY: "1"
+  DOCKER_CERT_PATH: /run/docker-certs
+  DOCKER_CONFIG: /tmp/docker
+  # The daemon-side socket path workload containers bind-mount; it is not a
+  # file in the agent.
+  SANDBOX_DOCKER_SOCKET: /var/run/docker.sock
+
+# The project works at /workspace/<Compose project name>: the agents keep
+# conversations and memory by working directory in state shared by every
+# project, so each project needs a path of its own. References are separate
+# from the writable project.
+x-agent-service: &agent-service
+  env_file:
+    - path: "${PWD}/.sandbox/agent.env"
+      required: false
+      format: raw
+  working_dir: &project-dir "/workspace/${COMPOSE_PROJECT_NAME:?Run sandbox-init-config first}"
+  hostname: sandbox
+  user: "${SANDBOX_UID:?Run sandbox-init-config first}:${SANDBOX_GID:?Run sandbox-init-config first}"
+  init: true
+  stdin_open: true
+  tty: true
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:mode=1777
+    - /dev/shm:ro
+  networks:
+    - session-internal
+
+x-reference-mount: &reference-mount
+  type: bind
+  # Compose cannot omit one volume conditionally. With no reference, mount
+  # only the null device read-only, exposing no additional host directory.
+  source: "${SANDBOX_REFERENCE:-/dev/null}"
+  target: /reference
+  read_only: true
+  bind: {create_host_path: false}
+x-project-mount: &project-mount
+  type: bind
+  source: "${PWD}"
+  target: *project-dir
+  read_only: false
+  bind: {create_host_path: false}
+x-config-mount: &config-mount
+  type: bind
+  source: "${PWD}/.sandbox"
+  target: "/workspace/${COMPOSE_PROJECT_NAME}/.sandbox"
+  read_only: true
+  bind: {create_host_path: false}
+x-client-mounts:
+  - &docker-client-certs
+    type: volume
+    source: docker-certs
+    target: /run/docker-certs
+    read_only: true
+    volume: {subpath: client}
+  - &ssh-socket
+    type: volume
+    source: ssh-socket
+    target: /run/ssh-agent
+    read_only: true
+  - &trust-store
+    type: volume
+    source: trust
+    target: /run/sandbox-trust
+    read_only: true
+  # This project's build caches and scratch space (Go's GOPATH, GOCACHE and
+  # GOTMPDIR), where builds may execute since /tmp is noexec. Compose names
+  # the volume after the project, so no other project's session mounts it.
+  - &cache
+    type: volume
+    source: cache
+    target: /cache
+
+x-state-init: &state-init
+  entrypoint: ["/usr/local/bin/sandbox-initialize-state"]
+  user: "0:0"
+  read_only: true
+  cap_drop:
+    - ALL
+  cap_add:
+    - CHOWN
+    - FOWNER
+    - DAC_OVERRIDE
+  security_opt:
+    - no-new-privileges:true
+  network_mode: none
+
+x-hardened: &hardened
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+x-migrate-state: &migrate-state
+  <<: *hardened
+  profiles: ["tools"]
+  image: ghcr.io/bryanwieg/ai-coding-sandbox:codex-latest
+  entrypoint: ["/usr/local/bin/sandbox-migrate-state"]
+  user: "0:0"
+  cap_add:
+    - CHOWN
+    - FOWNER
+    - DAC_OVERRIDE
+  network_mode: none
+  environment:
+    SANDBOX_STATE_OWNER: "${SANDBOX_UID}:${SANDBOX_GID}"
+    SANDBOX_MIGRATE_MODE: "${SANDBOX_MIGRATE_MODE:-copy}"
+
+services:
+  claude:
+    <<: *agent-service
+    profiles: ["claude"]
+    image: ghcr.io/bryanwieg/ai-coding-sandbox:claude-latest
+    depends_on:
+      egress-proxy: {condition: service_healthy}
+      docker: {condition: service_healthy, required: false}
+      publish: {condition: service_started, required: false}
+      ssh-agent: {condition: service_started, required: false}
+      claude-state-init: {condition: service_completed_successfully}
+    environment:
+      <<: *agent-environment
+      CLAUDE_CONFIG_DIR: /home/claude/.claude
+      GH_CONFIG_DIR: /home/claude/.claude/gh
+    volumes:
+      - *reference-mount
+      - *project-mount
+      - *config-mount
+      - {type: volume, source: claude-state, target: /home/claude/.claude}
+      - *cache
+      - {type: bind, source: "${PWD}/.sandbox/ssh", target: /home/claude/.ssh, read_only: true, bind: {create_host_path: false}}
+      - *docker-client-certs
+      - *ssh-socket
+      - *trust-store
+
+  codex:
+    <<: *agent-service
+    profiles: ["codex"]
+    image: ghcr.io/bryanwieg/ai-coding-sandbox:codex-latest
+    depends_on:
+      egress-proxy: {condition: service_healthy}
+      docker: {condition: service_healthy, required: false}
+      publish: {condition: service_started, required: false}
+      ssh-agent: {condition: service_started, required: false}
+      codex-state-init: {condition: service_completed_successfully}
+    environment:
+      <<: *agent-environment
+      CODEX_HOME: /home/codex/.codex
+      GH_CONFIG_DIR: /home/codex/.codex/gh
+    volumes:
+      - *reference-mount
+      - *project-mount
+      - *config-mount
+      - {type: volume, source: codex-state, target: /home/codex/.codex}
+      - *cache
+      - {type: bind, source: "${PWD}/.sandbox/ssh", target: /home/codex/.ssh, read_only: true, bind: {create_host_path: false}}
+      - *docker-client-certs
+      - *ssh-socket
+      - *trust-store
+
+  # Give the shared state volume and the project's cache volume, created
+  # root-owned, to the runtime user. Ownership is changed only when a volume root is not already theirs. Also
+  # create the certificate folder agents mount, before the daemon ever runs.
+  claude-state-init:
+    <<: *state-init
+    image: ghcr.io/bryanwieg/ai-coding-sandbox:claude-latest
+    environment:
+      SANDBOX_STATE_DIR: /home/claude/.claude
+      SANDBOX_STATE_OWNER: "${SANDBOX_UID}:${SANDBOX_GID}"
+      SANDBOX_STATE_CHOWN: if-needed
+      SANDBOX_DOCKER_CERTS_DIR: /certs
+      SANDBOX_OWNED_DIRS: /cache
+    volumes:
+      - {type: volume, source: claude-state, target: /home/claude/.claude}
+      - {type: volume, source: docker-certs, target: /certs}
+      - *cache
+
+  codex-state-init:
+    <<: *state-init
+    image: ghcr.io/bryanwieg/ai-coding-sandbox:codex-latest
+    environment:
+      SANDBOX_STATE_DIR: /home/codex/.codex
+      SANDBOX_STATE_OWNER: "${SANDBOX_UID}:${SANDBOX_GID}"
+      SANDBOX_STATE_CHOWN: if-needed
+      SANDBOX_DOCKER_CERTS_DIR: /certs
+      SANDBOX_OWNED_DIRS: /cache
+    volumes:
+      - {type: volume, source: codex-state, target: /home/codex/.codex}
+      - {type: volume, source: docker-certs, target: /certs}
+      - *cache
+
+  # The only route out: the base policy plus this project's approved additions.
+  egress-proxy:
+    <<: *hardened
+    image: ghcr.io/bryanwieg/ai-coding-sandbox:proxy-latest
+    user: "13:13"
+    environment:
+      HOST_PWD: "${PWD}"
+    tmpfs:
+      - /run
+      - /tmp:mode=1777
+      - /var/log/squid:uid=13,gid=13,mode=0755
+      - /var/spool/squid:uid=13,gid=13,mode=0755
+    volumes:
+      - {type: bind, source: "${PWD}/.sandbox/egress-policy.yaml", target: /etc/squid/project-policy.yaml, read_only: true, bind: {create_host_path: false}}
+      - {type: volume, source: trust, target: /trust, read_only: true}
+    expose:
+      - "3128"
+    healthcheck:
+      test: ["CMD-SHELL", "squid -k parse -f /tmp/squid.conf >/dev/null 2>&1 && test -r /tmp/squid.pid && kill -0 \"$(cat /tmp/squid.pid)\""]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+    networks:
+      - session-internal
+      - session-uplink
+
+  # Rootless daemon for this project's sessions; it stops itself once no agent
+  # holds a connection, and starts empty unless SANDBOX_DOCKER_DATA=persistent. Its privilege exceptions are the
+  # rootless daemon's: user namespaces need SETUID/SETGID for newuidmap and
+  # newgidmap, unconfined seccomp and system paths, and no no-new-privileges.
+  docker:
+    profiles: ["docker"]
+    image: ghcr.io/bryanwieg/ai-coding-sandbox:docker-daemon-latest
+    depends_on:
+      egress-proxy: {condition: service_healthy}
+    user: "${SANDBOX_UID}:${SANDBOX_UID}"
+    init: false
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+    security_opt:
+      - seccomp=unconfined
+      - systempaths=unconfined
+      - label=disable
+    devices:
+      - /dev/net/tun
+    mem_limit: "${SANDBOX_DOCKER_MEMORY:-4g}"
+    pids_limit: 4096
+    environment:
+      XDG_RUNTIME_DIR: "/run/user/${SANDBOX_UID}"
+      SANDBOX_GID: "${SANDBOX_GID}"
+      SANDBOX_DOCKER_DATA: "${SANDBOX_DOCKER_DATA:-ephemeral}"
+      HTTP_PROXY: "http://egress-proxy:3128"
+      HTTPS_PROXY: "http://egress-proxy:3128"
+      NO_PROXY: "localhost,127.0.0.1"
+    tmpfs:
+      - "/run:uid=${SANDBOX_UID},gid=${SANDBOX_UID},mode=0755"
+      - /tmp:mode=1777
+      # Declared as a volume by the upstream image but unused when rootless.
+      - /var/lib/docker
+    volumes:
+      # Bind mounts in the agent's commands resolve here, at the same path.
+      - *project-mount
+      - *config-mount
+      - {type: volume, source: docker-data, target: /home/rootless/.local/share/docker}
+      - {type: volume, source: docker-certs, target: /certs}
+    healthcheck:
+      test: ["CMD-SHELL", "docker --host \"unix://$$XDG_RUNTIME_DIR/docker.sock\" info >/dev/null 2>&1 && test -s /certs/client/key.pem"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    networks:
+      - session-internal
+      # session-daemon-proxied (internal, the default) or session-daemon-direct
+      # (a real uplink); any other value names no network and stops the launch.
+      - "session-daemon-${SANDBOX_DAEMON_EGRESS:-proxied}"
+
+  # Forwards the SANDBOX_PUBLISH_* ports from the host to the same daemon
+  # ports: three TCP and three UDP slots, each a port or a range. Compose
+  # cannot leave out an unset slot, so each binds a random loopback port to
+  # an unused one instead; with no ports set the forwarder exits at once.
+  publish:
+    <<: *hardened
+    profiles: ["publish"]
+    image: ghcr.io/bryanwieg/ai-coding-sandbox:forwarder-latest
+    depends_on:
+      docker: {condition: service_healthy, required: false}
+    user: "65534:65534"
+    environment:
+      SANDBOX_PUBLISH_PORTS: "${SANDBOX_PUBLISH_PORTS:-}"
+      SANDBOX_PUBLISH_PORTS_2: "${SANDBOX_PUBLISH_PORTS_2:-}"
+      SANDBOX_PUBLISH_PORTS_3: "${SANDBOX_PUBLISH_PORTS_3:-}"
+      SANDBOX_PUBLISH_UDP_PORTS: "${SANDBOX_PUBLISH_UDP_PORTS:-}"
+      SANDBOX_PUBLISH_UDP_PORTS_2: "${SANDBOX_PUBLISH_UDP_PORTS_2:-}"
+      SANDBOX_PUBLISH_UDP_PORTS_3: "${SANDBOX_PUBLISH_UDP_PORTS_3:-}"
+    ports:
+      - "${SANDBOX_PUBLISH_PORTS:+${SANDBOX_PUBLISH_ADDRESS:-127.0.0.1}:${SANDBOX_PUBLISH_PORTS}:}${SANDBOX_PUBLISH_PORTS:-127.0.0.1::9}"
+      - "${SANDBOX_PUBLISH_PORTS_2:+${SANDBOX_PUBLISH_ADDRESS:-127.0.0.1}:${SANDBOX_PUBLISH_PORTS_2}:}${SANDBOX_PUBLISH_PORTS_2:-127.0.0.1::9}"
+      - "${SANDBOX_PUBLISH_PORTS_3:+${SANDBOX_PUBLISH_ADDRESS:-127.0.0.1}:${SANDBOX_PUBLISH_PORTS_3}:}${SANDBOX_PUBLISH_PORTS_3:-127.0.0.1::9}"
+      - "${SANDBOX_PUBLISH_UDP_PORTS:+${SANDBOX_PUBLISH_ADDRESS:-127.0.0.1}:${SANDBOX_PUBLISH_UDP_PORTS}:}${SANDBOX_PUBLISH_UDP_PORTS:-127.0.0.1::9}${SANDBOX_PUBLISH_UDP_PORTS:+/udp}"
+      - "${SANDBOX_PUBLISH_UDP_PORTS_2:+${SANDBOX_PUBLISH_ADDRESS:-127.0.0.1}:${SANDBOX_PUBLISH_UDP_PORTS_2}:}${SANDBOX_PUBLISH_UDP_PORTS_2:-127.0.0.1::9}${SANDBOX_PUBLISH_UDP_PORTS_2:+/udp}"
+      - "${SANDBOX_PUBLISH_UDP_PORTS_3:+${SANDBOX_PUBLISH_ADDRESS:-127.0.0.1}:${SANDBOX_PUBLISH_UDP_PORTS_3}:}${SANDBOX_PUBLISH_UDP_PORTS_3:-127.0.0.1::9}${SANDBOX_PUBLISH_UDP_PORTS_3:+/udp}"
+    networks:
+      - session-internal
+      - session-publish
+
+  # Serves the unlocked keys to agents through the socket volume; only it and
+  # ssh-unlock mount the key folder. It lives until its keys expire.
+  ssh-agent:
+    <<: *hardened
+    profiles: ["ssh"]
+    image: ghcr.io/bryanwieg/ai-coding-sandbox:ssh-agent-latest
+    user: "${SANDBOX_UID}:${SANDBOX_GID}"
+    network_mode: none
+    environment:
+      SANDBOX_SSH_KEY_LIFETIME: "${SANDBOX_SSH_KEY_LIFETIME:-8h}"
+    volumes:
+      - &ssh-keys {type: bind, source: "${SANDBOX_SSH_KEY_DIR:-${HOME}/.config/ai-coding-sandbox/ssh-keys}", target: /keys, read_only: true, bind: {create_host_path: false}}
+      - {type: volume, source: ssh-socket, target: /run/ssh-agent}
+
+  # docker compose --env-file .sandbox/env run --rm ssh-unlock
+  ssh-unlock:
+    <<: *hardened
+    profiles: ["ssh"]
+    image: ghcr.io/bryanwieg/ai-coding-sandbox:ssh-agent-latest
+    entrypoint: ["/usr/local/bin/sandbox-ssh-unlock"]
+    depends_on:
+      ssh-agent: {condition: service_started}
+    user: "${SANDBOX_UID}:${SANDBOX_GID}"
+    network_mode: none
+    stdin_open: true
+    tty: true
+    environment:
+      SANDBOX_SSH_KEY_LIFETIME: "${SANDBOX_SSH_KEY_LIFETIME:-8h}"
+    volumes:
+      - *ssh-keys
+      - {type: volume, source: ssh-socket, target: /run/ssh-agent, read_only: true}
+
+  # docker compose --env-file .sandbox/env run --rm trust
+  trust:
+    <<: *hardened
+    profiles: ["tools"]
+    image: ghcr.io/bryanwieg/ai-coding-sandbox:proxy-latest
+    entrypoint: ["/usr/local/bin/sandbox-trust"]
+    user: "0:0"
+    network_mode: none
+    stdin_open: true
+    tty: true
+    environment:
+      HOST_PWD: "${PWD}"
+    volumes:
+      - {type: bind, source: "${PWD}/.sandbox/egress-policy.yaml", target: /etc/squid/project-policy.yaml, read_only: true, bind: {create_host_path: false}}
+      - {type: volume, source: trust, target: /trust}
+
+  # Copy of run-sandbox state into the shared volumes, one agent at a time,
+  # from the old Compose project's volume (default: this checkout's folder
+  # name, ai-coding-sandbox):
+  #   SANDBOX_MIGRATE_FROM=<old project> docker compose \
+  #     --env-file .sandbox/env run --rm migrate-claude-state
+  # SANDBOX_MIGRATE_MODE=merge adds another old Claude volume's conversations
+  # and memory to state already migrated, without overwriting anything.
+  migrate-claude-state:
+    <<: *migrate-state
+    volumes:
+      - {type: volume, source: old-claude-state, target: /from/claude, read_only: true}
+      - {type: volume, source: claude-state, target: /to/claude}
+
+  migrate-codex-state:
+    <<: *migrate-state
+    volumes:
+      - {type: volume, source: old-codex-state, target: /from/codex, read_only: true}
+      - {type: volume, source: codex-state, target: /to/codex}
+
+volumes:
+  claude-state: {name: ai-coding-sandbox-claude-state, external: true}
+  codex-state: {name: ai-coding-sandbox-codex-state, external: true}
+  trust: {name: ai-coding-sandbox-trust, external: true}
+  old-claude-state: {name: "${SANDBOX_MIGRATE_FROM:-ai-coding-sandbox}_claude-state", external: true}
+  old-codex-state: {name: "${SANDBOX_MIGRATE_FROM:-ai-coding-sandbox}_codex-state", external: true}
+  docker-data:
+  cache:
+  docker-certs:
+  ssh-socket:
+
+networks:
+  session-internal:
+    internal: true
+  session-uplink:
+  # The daemon's second network, chosen by SANDBOX_DAEMON_EGRESS: internal
+  # by default, or an uplink of its own that no other service joins.
+  session-daemon-proxied:
+    internal: true
+  session-daemon-direct:
+  # Published ports need a non-internal network; without outbound NAT it
+  # still has no route to the Internet.
+  session-publish:
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"

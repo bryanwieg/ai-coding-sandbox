@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+case "$1" in
+    status)
+        # The JSON field is authoritative; the exit status alone is not relied on,
+        # and the report is shown even when logged out.
+        status=$(claude auth status --json) || true
+        printf '%s\n' "$status"
+        printf '%s\n' "$status" | jq -e '.loggedIn == true' >/dev/null
+        ;;
+    login)
+        echo 'Complete Claude authentication: open the URL below on any device, sign in, and paste the code back here.' >&2
+        exec claude auth login
+        ;;
+    logout) exec claude auth logout ;;
+    *)
+        echo "Unsupported authentication action: $1" >&2
+        exit 2
+        ;;
+esac

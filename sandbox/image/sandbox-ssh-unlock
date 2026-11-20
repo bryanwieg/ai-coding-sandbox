@@ -1,0 +1,57 @@
+#!/bin/sh
+# Loads the private keys in /keys into the session ssh-agent sidecar, asking
+# for a passphrase in the terminal when needed. Keys readable by group or
+# others are refused. --if-needed reuses keys already loaded in the agent.
+# Exits non-zero when no key was loaded or already available.
+set -eu
+
+if_needed=false
+case "$#:${1:-}" in
+    0:) ;;
+    1:--if-needed) if_needed=true ;;
+    *) echo 'Usage: sandbox-ssh-unlock [--if-needed]' >&2; exit 2 ;;
+esac
+
+socket=/run/ssh-agent/agent.sock
+lifetime=${SANDBOX_SSH_KEY_LIFETIME:-8h}
+SSH_AUTH_SOCK=$socket
+export SSH_AUTH_SOCK
+
+tries=0
+until [ -S "$socket" ]; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 20 ]; then
+        echo 'The sandbox ssh-agent is not running.' >&2
+        exit 1
+    fi
+    sleep 0.5
+done
+
+if [ "$if_needed" = true ] && ssh-add -l >/dev/null 2>&1; then
+    echo 'SSH keys are already unlocked.' >&2
+    exit 0
+fi
+
+loaded=0
+for key in /keys/* /keys/.[!.]*; do
+    [ -f "$key" ] || continue
+    head -n 1 "$key" 2>/dev/null | grep -q -- '-----BEGIN .*PRIVATE KEY-----' || continue
+    name=${key#/keys/}
+    case "$(stat -c %a "$key")" in
+        ?00) ;;
+        *)
+            printf 'Refusing %s: readable by group or others; chmod 600 it.\n' "$name" >&2
+            continue
+            ;;
+    esac
+    printf 'Unlocking %s for %s.\n' "$name" "$lifetime" >&2
+    if ssh-add -t "$lifetime" "$key"; then
+        loaded=$((loaded + 1))
+    fi
+done
+
+if [ "$loaded" -eq 0 ]; then
+    echo 'No SSH keys were unlocked.' >&2
+    exit 1
+fi
+printf '%s key(s) unlocked.\n' "$loaded" >&2

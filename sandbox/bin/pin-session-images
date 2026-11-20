@@ -1,0 +1,32 @@
+#!/bin/sh
+# Writes compose.session.yaml to standard output with every session image
+# pinned by digest, for the release workflow. Each argument is NAME=DIGEST,
+# where NAME is the tag prefix (claude, codex, docker-daemon, proxy,
+# forwarder, ssh-agent) and DIGEST is sha256:<hex>. Fails unless every image
+# in the file is pinned.
+set -eu
+
+root_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+repository=ghcr.io/bryanwieg/ai-coding-sandbox
+script=
+
+for argument in "$@"; do
+    name=${argument%%=*}
+    digest=${argument#*=}
+    case "$name" in
+        claude | codex | docker-daemon | proxy | forwarder | ssh-agent) tag=$name-latest ;;
+        *) echo "pin-session-images: unknown image: $name" >&2; exit 2 ;;
+    esac
+    if ! printf '%s\n' "$digest" | grep -Eqx 'sha256:[0-9a-f]{64}'; then
+        echo "pin-session-images: invalid digest for $name: $digest" >&2
+        exit 2
+    fi
+    script="${script}s|image: $repository:$tag\$|image: $repository@$digest|;"
+done
+
+pinned=$(sed "$script" "$root_dir/compose.session.yaml")
+if printf '%s\n' "$pinned" | grep -E '^[[:space:]]+image:' | grep -Ev "image: $repository@sha256:[0-9a-f]{64}\$" >&2; then
+    echo 'pin-session-images: the images above are not pinned.' >&2
+    exit 1
+fi
+printf '%s\n' "$pinned"

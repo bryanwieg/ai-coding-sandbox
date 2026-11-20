@@ -1,0 +1,115 @@
+#!/bin/sh
+# Copies run-sandbox agent state into the shared session volumes, run by the
+# migrate-*-state Compose services. The old volume is mounted read-only at
+# /from/<agent> and never modified; everything keeps its /workspace paths.
+#
+# SANDBOX_MIGRATE_MODE=copy (the default) copies it into /to/<agent> only
+# while that is still empty, so a second run changes nothing.
+# SANDBOX_MIGRATE_MODE=merge (Claude only) adds the conversations and memory
+# of another old volume to state already migrated: files in projects/,
+# file-history/ and tasks/ that are missing, never overwriting one, and the
+# prompt history lines, in time order. Sign-ins, settings and plugins stay
+# those of the first copy.
+#
+# The result is given to SANDBOX_STATE_OWNER.
+set -eu
+
+owner=${SANDBOX_STATE_OWNER:?Set SANDBOX_STATE_OWNER to the runtime uid:gid}
+mode=${SANDBOX_MIGRATE_MODE:-copy}
+changed=0
+mounted=0
+
+case "$mode" in
+    copy | merge) ;;
+    *) echo "Unsupported SANDBOX_MIGRATE_MODE: $mode" >&2; exit 2 ;;
+esac
+
+has_entries() {
+    find "$1" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .
+}
+
+# merge_tree FROM TO: copies each file and link in FROM that TO lacks, and
+# prints "added" or "kept" for each.
+merge_tree() {
+    (cd "$1" && find . \( -type f -o -type l \) -print) | while IFS= read -r path; do
+        if [ -e "$2/$path" ] || [ -L "$2/$path" ]; then
+            echo kept
+        else
+            mkdir -p "$2/${path%/*}"
+            cp -a "$1/$path" "$2/$path"
+            echo added
+        fi
+    done
+}
+
+# merge_history FROM TO: the union of both prompt histories, by timestamp.
+# A line that is not JSON stops the merge before anything is replaced.
+merge_history() {
+    [ -f "$1/history.jsonl" ] || return 0
+    # The service has no writable /tmp, so work beside the target.
+    work=$(mktemp -d "$2/.migrate.XXXXXX")
+    cat "$2/history.jsonl" "$1/history.jsonl" 2>/dev/null > "$work/both" || :
+    if ! jq -c -R 'fromjson' "$work/both" > "$work/parsed" ||
+        ! jq -c -s 'unique_by(tojson) | sort_by(.timestamp // 0) | .[]' "$work/parsed" > "$2/.history.jsonl.tmp"; then
+        rm -rf "$work" "$2/.history.jsonl.tmp"
+        echo 'History: a line is not JSON; the history was left unchanged.' >&2
+        return 1
+    fi
+    rm -rf "$work"
+    mv "$2/.history.jsonl.tmp" "$2/history.jsonl"
+    echo "History: $(wc -l < "$2/history.jsonl") prompt(s)."
+}
+
+merge_claude() {
+    from=$1 to=$2
+    if ! has_entries "$to"; then
+        echo 'The claude state volume is empty; copy the current state first (SANDBOX_MIGRATE_MODE=copy).' >&2
+        exit 1
+    fi
+    for dir in projects file-history tasks; do
+        [ -d "$from/$dir" ] || continue
+        results=$(merge_tree "$from/$dir" "$to/$dir")
+        printf '%s: added %s file(s), kept %s existing.\n' "$dir" \
+            "$(printf '%s\n' "$results" | grep -c '^added$' || :)" \
+            "$(printf '%s\n' "$results" | grep -c '^kept$' || :)"
+    done
+    merge_history "$from" "$to"
+    for dir in skills agents commands; do
+        if [ -d "$from/$dir" ] && has_entries "$from/$dir"; then
+            echo "Not merged: $dir/ ($(find "$from/$dir" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort | tr '\n' ' ')); copy them yourself if you still need them."
+        fi
+    done
+}
+
+for agent in claude codex; do
+    from=/from/$agent
+    to=/to/$agent
+    [ -d "$to" ] || continue
+    mounted=$((mounted + 1))
+    if ! has_entries "$from"; then
+        echo "No old $agent state to migrate."
+        continue
+    fi
+    if [ "$mode" = merge ]; then
+        if [ "$agent" != claude ]; then
+            echo "Only Claude state can be merged; $agent state is copied." >&2
+            exit 2
+        fi
+        merge_claude "$from" "$to"
+        echo "Merged the $agent state."
+    elif has_entries "$to"; then
+        echo "The $agent state volume already has state; leaving it unchanged."
+        continue
+    else
+        cp -a "$from"/. "$to"/
+        echo "Migrated the $agent state."
+    fi
+    chown -Rh "$owner" "$to"
+    changed=$((changed + 1))
+done
+
+if [ "$mounted" -eq 0 ]; then
+    echo 'No state volume is mounted at /to/claude or /to/codex.' >&2
+    exit 1
+fi
+echo "Migration finished: $changed volume(s) changed."

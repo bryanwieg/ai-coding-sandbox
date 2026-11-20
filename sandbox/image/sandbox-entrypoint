@@ -1,0 +1,65 @@
+#!/bin/sh
+set -eu
+
+runtime_uid=$(id -u)
+runtime_gid=$(id -g)
+# The image selects its runtime account name; Codex remains the default.
+user_name=${SANDBOX_USER:-codex}
+case "$user_name" in
+    codex) user_label=Codex; state_dir=${CODEX_HOME:-$HOME/.codex} ;;
+    claude) user_label=Claude; state_dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude} ;;
+    *) echo "Unsupported sandbox user: $user_name" >&2; exit 1 ;;
+esac
+# Plugins use XDG config even though the rest of HOME is read-only.
+XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$state_dir/xdg}
+export XDG_CONFIG_HOME
+identity_dir=$(mktemp -d "/tmp/$user_name-identity.XXXXXX")
+
+# NSS records supply names; numeric process credentials and permissions stay unchanged.
+(
+    umask 077
+    awk -F: -v uid="$runtime_uid" -v name="$user_name" '$1 != name && $3 != uid' /etc/passwd > "$identity_dir/passwd"
+    printf '%s:x:%s:%s:%s:/home/%s:/bin/bash\n' "$user_name" "$runtime_uid" "$runtime_gid" "$user_label" "$user_name" >> "$identity_dir/passwd"
+    awk -F: -v gid="$runtime_gid" -v name="$user_name" '$1 != name && $3 != gid' /etc/group > "$identity_dir/group"
+    printf '%s:x:%s:\n' "$user_name" "$runtime_gid" >> "$identity_dir/group"
+)
+
+NSS_WRAPPER_PASSWD="$identity_dir/passwd"
+NSS_WRAPPER_GROUP="$identity_dir/group"
+LD_PRELOAD="/usr/local/lib/libnss_wrapper.so${LD_PRELOAD:+:$LD_PRELOAD}"
+export NSS_WRAPPER_PASSWD NSS_WRAPPER_GROUP LD_PRELOAD
+
+# Sessions (SANDBOX_SESSION=1), for every command (the
+# default start and overrides such as a shell alike). Background leases hold a
+# connection to the egress proxy and, when there is one, the session daemon
+# for the container's life, since both stop once no session is connected.
+# Without a session daemon (the docker profile is off) the Docker variables
+# are cleared.
+# Before the command runs, wait up to two seconds for the leases to connect, so
+# even a brief session is counted by the services' idle checks.
+lease_ports=
+if [ "${SANDBOX_SESSION:-}" = 1 ]; then
+    nohup setsid sandbox-proxy-lease >/dev/null 2>&1 &
+    lease_ports=0C38
+fi
+if [ "${SANDBOX_SESSION:-}" = 1 ] && [ -n "${DOCKER_HOST:-}" ]; then
+    if timeout 2 getent hosts docker >/dev/null 2>&1; then
+        nohup setsid sandbox-docker-lease >/dev/null 2>&1 &
+        lease_ports="$lease_ports 0948"
+    else
+        unset DOCKER_HOST DOCKER_TLS_VERIFY DOCKER_CERT_PATH SANDBOX_DOCKER_SOCKET
+    fi
+fi
+# Established connections to remote ports 3128 (0C38) and 2376 (0948).
+leases_connected() {
+    for port in $lease_ports; do
+        awk -v port="$port" '$3 ~ (":" port "$") && $4 == "01" { found = 1 } END { exit !found }' \
+            /proc/net/tcp /proc/net/tcp6 2>/dev/null || return 1
+    done
+}
+tries=0
+until [ -z "$lease_ports" ] || leases_connected || [ "$tries" -ge 20 ]; do
+    tries=$((tries + 1))
+    sleep 0.1
+done
+exec "$@"

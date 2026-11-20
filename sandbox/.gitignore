@@ -1,0 +1,8 @@
+# Left over from run-sandbox, which kept its settings, secrets, keys and
+# workspace policy here. Ignored until you delete them.
+.env
+.env.*
+.envrc
+.ssh/
+/squid/egress-policy.yaml
+/.proxy-state/

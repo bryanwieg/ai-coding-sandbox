@@ -1,0 +1,332 @@
+name: Release
+
+# Builds every session image, then publishes the Compose artifact with each
+# image pinned by digest.
+#
+# Versions: each release gets an ID from its UTC date, such as 2026.11.19,
+# with _1, _2 and so on for later releases that day; it tags the Compose
+# artifact and the commit. The agent images are versioned by their agent,
+# such as claude-2.1.327, and the others by the release ID, such as
+# proxy-2026.11.19; a rebuild of the same version appends _1, _2 and so on.
+# An image whose content matches its newest version (ignoring the build time
+# and the commit label) keeps that version and digest, so sessions download
+# only what changed. bin/release-tags names the versions.
+#
+# While the repository is public, images and the artifact carry build
+# provenance attestations; verify one with
+#   gh attestation verify oci://ghcr.io/bryanwieg/ai-coding-sandbox-compose:latest --owner bryanwieg
+on:
+  push:
+    branches: [main]
+    # Host-side files are not part of any image or the artifact.
+    paths:
+      - "sandbox/**"
+      - "!sandbox/bin/**"
+      - "!sandbox/shell/**"
+      - "!sandbox/tests/**"
+      - "!sandbox/README.md"
+      - "!sandbox/compose.dev.yaml"
+      - ".github/workflows/release.yml"
+  # Weekly rebuilds refresh apt/apk packages even when no pinned version
+  # changes. Dependabot proposes updates to the pinned images themselves.
+  schedule:
+    - cron: "17 6 * * 1"
+  # Also dispatched by dependabot-automerge.yml, whose merges do not trigger
+  # push workflows.
+  workflow_dispatch:
+
+# Queue rather than cancel, so the moving tags, the release IDs and the
+# artifact advance in commit order.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-id:
+    runs-on: ubuntu-24.04
+    outputs:
+      id: ${{ steps.id.outputs.id }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Name the release
+        id: id
+        run: |
+          set -euo pipefail
+          date=$(date -u +%Y.%m.%d)
+          id=$(git ls-remote --tags --refs origin "refs/tags/$date*" |
+            sed 's|.*refs/tags/||' | sandbox/bin/release-tags next "$date")
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+  images:
+    needs: release-id
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: true
+      matrix:
+        # version: the agent whose version names the image, or the release ID.
+        include:
+          - {target: session-init, name: init, version: release}
+          - {target: claude, name: claude, version: claude}
+          - {target: codex, name: codex, version: codex}
+          - {target: session-daemon, name: docker-daemon, version: release}
+          - {target: session-proxy, name: proxy, version: release}
+          - {target: session-forwarder, name: forwarder, version: release}
+          - {target: session-ssh-agent, name: ssh-agent, version: release}
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+      NAME: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Find the version
+        id: base
+        env:
+          VERSION_FROM: ${{ matrix.version }}
+          RELEASE: ${{ needs.release-id.outputs.id }}
+        run: |
+          set -euo pipefail
+          case "$VERSION_FROM" in
+            claude) version=$(jq -r '.dependencies["@anthropic-ai/claude-code"]' sandbox/claude/package.json) ;;
+            codex) version=$(jq -r '.dependencies["@openai/codex"]' sandbox/codex/package.json) ;;
+            # The date alone: a later release that day adds its _N to the
+            # release ID, and release-tags adds one to the image version
+            # only when that image changed.
+            release) version=${RELEASE%%_*} ;;
+          esac
+          if ! printf '%s\n' "$version" | grep -Eqx '[0-9][0-9A-Za-z.-]*'; then
+            echo "Unusable version for $NAME: $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The action only installs the releases it lists, which lag behind;
+      # this one is pinned by its published checksum instead.
+      - uses: oras-project/setup-oras@v2
+        with:
+          url: https://github.com/oras-project/oras/releases/download/v1.3.6/oras_1.3.6_linux_amd64.tar.gz
+          checksum: 66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0
+
+      # Pushed by digest only; the next step decides on its tags.
+      - name: Build the ${{ matrix.name }} image
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ./sandbox
+          file: ./sandbox/Dockerfile
+          platforms: linux/amd64
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          target: ${{ matrix.target }}
+          # Package indexes changing does not invalidate a RUN cache entry.
+          # Refresh installed distro packages weekly; retain the independent
+          # npm and Python install caches.
+          no-cache-filters: ${{ github.event_name == 'schedule' && 'base,session-ssh-agent' || '' }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: |
+            type=gha,scope=sandbox-image-${{ matrix.name }}
+            type=gha,scope=sandbox-image-codex
+            type=gha,scope=sandbox-image-claude
+          cache-to: type=gha,scope=sandbox-image-${{ matrix.name }},mode=max,ignore-error=true
+
+      # Keep the newest version when the build matches it; otherwise tag the
+      # build with the next version. Either way, NAME-latest follows.
+      - name: Tag the version
+        id: version
+        env:
+          BUILT: ${{ steps.build.outputs.digest }}
+          BASE: ${{ steps.base.outputs.version }}
+        run: |
+          set -euo pipefail
+          fingerprint() {
+            docker buildx imagetools inspect "$IMAGE@$1" --format '{{json .Image}}' |
+              sandbox/bin/release-tags fingerprint
+          }
+          oras repo tags "$IMAGE" > "$RUNNER_TEMP/tags"
+          digest=$BUILT
+          tag=
+          previous=$(sandbox/bin/release-tags last "$NAME" < "$RUNNER_TEMP/tags")
+          if [ -n "$previous" ]; then
+            previous_digest=$(oras resolve "$IMAGE:$previous")
+            if [ "$(fingerprint "$previous_digest")" = "$(fingerprint "$BUILT")" ]; then
+              digest=$previous_digest
+              tag=$previous
+              echo "$NAME is unchanged; keeping $tag."
+            fi
+          fi
+          if [ -z "$tag" ]; then
+            tag=$(sandbox/bin/release-tags next "$NAME-$BASE" < "$RUNNER_TEMP/tags")
+            oras tag "$IMAGE@$BUILT" "$tag"
+          fi
+          oras tag "$IMAGE@$digest" "$NAME-latest"
+          {
+            echo "digest=$digest"
+            echo "tag=$tag"
+            echo "new=$([ "$digest" = "$BUILT" ] && echo true || echo false)"
+          } >> "$GITHUB_OUTPUT"
+
+      # GitHub refuses attestations for user-owned private repositories.
+      - name: Check whether attestations are available
+        id: visibility
+        if: steps.version.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "public=$(gh api "repos/$GITHUB_REPOSITORY" --jq '.visibility == "public"')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/attest-build-provenance@v4
+        if: steps.version.outputs.new == 'true' && steps.visibility.outputs.public == 'true'
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.version.outputs.digest }}
+          push-to-registry: true
+
+      # Init runs before Compose and is not a session service, so it has no
+      # digest to pin.
+      - name: Record the version
+        env:
+          DIGEST: ${{ steps.version.outputs.digest }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          mkdir -p release-data
+          echo "$TAG" > "release-data/$NAME.tag"
+          if [ "$NAME" != init ]; then
+            echo "$NAME=$DIGEST" > "release-data/$NAME.digest"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.name }}
+          path: release-data/
+          retention-days: 1
+
+  compose:
+    needs: [release-id, images]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      ARTIFACT: ghcr.io/${{ github.repository }}-compose
+      RELEASE: ${{ needs.release-id.outputs.id }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: release-data
+          merge-multiple: true
+
+      - name: Pin the images
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          # shellcheck disable=SC2046
+          sandbox/bin/pin-session-images $(cat release-data/*.digest) > release/compose.yaml
+          cat release/compose.yaml
+
+      # The loader must accept the pinned file the way sessions load it.
+      - name: Check the pinned file
+        working-directory: release
+        env:
+          SANDBOX_UID: "1000"
+          SANDBOX_GID: "1000"
+          SANDBOX_REFERENCE: /tmp
+          SANDBOX_PUBLISH_PORTS: 8000-8009
+        run: |
+          docker compose -f compose.yaml --profile claude --profile codex --profile docker \
+            --profile publish --profile ssh --profile tools config --quiet
+
+      # Taken before anything is published under the ID, so a failed release
+      # never reuses one.
+      - name: Tag the commit with the release ID
+        run: |
+          set -euo pipefail
+          git tag "$RELEASE" "$GITHUB_SHA"
+          git push origin "refs/tags/$RELEASE"
+
+      # The action only installs the releases it lists, which lag behind;
+      # this one is pinned by its published checksum instead.
+      - uses: oras-project/setup-oras@v2
+        with:
+          url: https://github.com/oras-project/oras/releases/download/v1.3.6/oras_1.3.6_linux_amd64.tar.gz
+          checksum: 66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pushed with oras in the format docker compose publish writes, which
+      # the oci:// loader reads. docker compose publish itself rejects this
+      # file: its secret check loads it uninterpolated, where the ports entry
+      # does not parse. The sandbox.images annotation lists each image's
+      # version.
+      - name: Publish the Compose artifact
+        id: push
+        working-directory: release
+        run: |
+          set -euo pipefail
+          images=$(cat ../release-data/*.tag | sort | paste -sd , -)
+          digest=$(oras push --format go-template='{{.digest}}' \
+            --artifact-type application/vnd.docker.compose.project \
+            --annotation "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --annotation "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --annotation "org.opencontainers.image.version=$RELEASE" \
+            --annotation "sandbox.images=$images" \
+            "$ARTIFACT:$RELEASE" compose.yaml:application/vnd.docker.compose.file+yaml)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      # GitHub refuses attestations for user-owned private repositories.
+      - name: Check whether attestations are available
+        id: visibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "public=$(gh api "repos/$GITHUB_REPOSITORY" --jq '.visibility == "public"')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/attest-build-provenance@v4
+        if: steps.visibility.outputs.public == 'true'
+        with:
+          subject-name: ${{ env.ARTIFACT }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      # Moved only once the pinned artifact is published and attested.
+      - name: Move latest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          oras tag "$ARTIFACT:$RELEASE" latest
+          {
+            echo "## Release $RELEASE"
+            echo
+            echo "Compose artifact: \`oci://$ARTIFACT:$RELEASE\` (\`$DIGEST\`), also \`latest\`."
+            echo
+            echo '| Image | Version |'
+            echo '| --- | --- |'
+            for file in release-data/*.tag; do
+              name=$(basename "$file" .tag)
+              echo "| $name | \`$(cat "$file")\` |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,17 @@
+#!/bin/sh
+# Uniform agent authentication for every sandbox image:
+#   sandbox-auth status   exit 0 only when the agent is authenticated
+#   sandbox-auth login    run the agent's interactive login flow
+#   sandbox-auth logout   remove the agent's stored credentials
+# Each image implements these in /usr/local/libexec/sandbox/auth.
+set -eu
+
+if [ "$#" -ne 1 ]; then
+    echo 'Usage: sandbox-auth status|login|logout' >&2
+    exit 2
+fi
+
+case "$1" in
+    status|login|logout) exec /usr/local/libexec/sandbox/auth "$1" ;;
+    *) echo 'Usage: sandbox-auth status|login|logout' >&2; exit 2 ;;
+esac

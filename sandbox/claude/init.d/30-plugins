@@ -1,0 +1,55 @@
+#!/bin/sh
+# Install the plugins declared in the image's manifest. Marketplaces are cloned
+# from GitHub through the egress proxy; the manifest checksum is recorded only
+# after every entry succeeds, so a failed synchronization retries next launch.
+set -eu
+
+plugin_manifest=/usr/local/share/claude/plugins.txt
+state_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+installed_hash_file="$state_dir/plugins.manifest.sha256"
+
+if [ ! -s "$plugin_manifest" ]; then
+    exit 0
+fi
+
+manifest_hash=$(sha256sum "$plugin_manifest" | cut -d ' ' -f 1)
+installed_hash=$(sed -n '1p' "$installed_hash_file" 2>/dev/null || true)
+
+if [ "$manifest_hash" = "$installed_hash" ]; then
+    exit 0
+fi
+
+echo 'Synchronizing Claude Code plugins...' >&2
+failed=false
+while IFS= read -r entry; do
+    case "$entry" in
+        ''|'#'*) continue ;;
+        'marketplace '*)
+            source=${entry#marketplace }
+            if ! printf '%s\n' "$source" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'; then
+                echo "Invalid Claude marketplace: $source" >&2
+                exit 1
+            fi
+            if ! claude plugin marketplace add "$source" >/dev/null; then
+                echo "Unable to add Claude marketplace: $source" >&2
+                failed=true
+            fi
+            ;;
+        *)
+            if ! printf '%s\n' "$entry" | grep -Eq '^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$'; then
+                echo "Invalid Claude plugin selector: $entry" >&2
+                exit 1
+            fi
+            if ! claude plugin install "$entry" >/dev/null; then
+                echo "Unable to install Claude plugin: $entry" >&2
+                failed=true
+            fi
+            ;;
+    esac
+done < "$plugin_manifest"
+
+if [ "$failed" = false ]; then
+    printf '%s\n' "$manifest_hash" > "$installed_hash_file"
+else
+    echo 'Plugin synchronization incomplete; it will be retried next launch.' >&2
+fi

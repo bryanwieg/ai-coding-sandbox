@@ -1,0 +1,210 @@
+name: Sandbox image
+
+# Pull requests build, smoke-test, and audit both agent images, and run the
+# session image tests. Publishing is in release.yml instead.
+on:
+  pull_request:
+    paths:
+      - "sandbox/**"
+      - "install.sh"
+      - ".github/workflows/**"
+
+concurrency:
+  group: sandbox-image-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The session tests build their own images with the default builder, so
+  # this job has no Buildx setup. The session daemon and forwarder tests and
+  # the audit's Docker part cannot run here, because the unprivileged rootless
+  # daemon does not start on this runner; run them locally (see
+  # sandbox/README.md).
+  session:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Session image tests
+        run: |
+          sh sandbox/tests/test-sandbox-init-config.sh
+          sh sandbox/tests/test-init-image.sh
+          sh sandbox/tests/test-reference-mount.sh
+          sh sandbox/tests/test-session-init.sh
+          sh sandbox/tests/test-session-state.sh
+          sh sandbox/tests/test-session-agent-launch.sh
+          sh sandbox/tests/test-powershell.sh ai-coding-sandbox-claude:test ai-coding-sandbox-codex:test
+          sh sandbox/tests/test-go.sh ai-coding-sandbox-claude:test ai-coding-sandbox-codex:test
+          sh sandbox/tests/test-shell.sh ai-coding-sandbox-claude:test ai-coding-sandbox-codex:test
+          sh sandbox/tests/test-vscode.sh ai-coding-sandbox-claude:test ai-coding-sandbox-codex:test
+          sh sandbox/tests/test-session-proxy.sh
+          sh sandbox/tests/test-session-ssh-agent.sh
+
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check sandbox configuration and host tools
+        run: |
+          sandbox/bin/check-sandbox
+          sh sandbox/tests/test-policy.sh
+          sh sandbox/tests/test-audit-session.sh
+          sh sandbox/tests/test-claude-dev-plugins.sh
+          sh sandbox/tests/test-context7-check.sh
+          [ -x /usr/sbin/sshd ] || sudo apt-get install -y -qq --no-install-recommends openssh-server
+          sh sandbox/tests/test-ssh-hostkey.sh
+          sh sandbox/tests/test-pin-session-images.sh
+          sh sandbox/tests/test-release-tags.sh
+          sh sandbox/tests/test-shell-functions.sh
+          sh sandbox/tests/test-install.sh
+
+      - name: Detect image changes
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- | grep -q '^sandbox/'; then
+            echo "image=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "image=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v4
+        if: steps.changes.outputs.image == 'true'
+
+      - name: Build Codex image
+        if: steps.changes.outputs.image == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: ./sandbox
+          file: ./sandbox/Dockerfile
+          platforms: linux/amd64
+          load: true
+          target: codex
+          tags: codex-sandbox:ci
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: |
+            type=gha,scope=sandbox-image-codex
+            type=gha,scope=sandbox-image-claude
+          cache-to: type=gha,scope=sandbox-image-codex,mode=max,ignore-error=true
+
+      - name: Build Claude image
+        if: steps.changes.outputs.image == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: ./sandbox
+          file: ./sandbox/Dockerfile
+          platforms: linux/amd64
+          load: true
+          target: claude
+          tags: claude-sandbox:ci
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: |
+            type=gha,scope=sandbox-image-claude
+            type=gha,scope=sandbox-image-codex
+          cache-to: type=gha,scope=sandbox-image-claude,mode=max,ignore-error=true
+
+      - name: Verify shared image dependencies
+        if: steps.changes.outputs.image == 'true'
+        run: |
+          for image in codex-sandbox:ci claude-sandbox:ci; do
+            docker run --rm --network none --read-only --tmpfs /tmp \
+              --entrypoint sh "$image" -ec '
+                if command -v aws || command -v terraform; then
+                  echo "Removed cloud tools are still installed" >&2
+                  exit 1
+                fi
+                python3 -c "import pycodestyle, pytest, pytest_timeout, python_on_whales, ruff, scapy, yaml; assert yaml.safe_load(\"answer: 42\") == {\"answer\": 42}"
+                pycodestyle --version
+                ruff --version
+                git lfs version
+                test "$(git config --system --get filter.lfs.process)" = "git-lfs filter-process"
+                docker --version
+                docker compose version
+                docker buildx version
+                node -p "require(\"/opt/node-tools/package.json\").dependencies[\"@upstash/context7-mcp\"]"
+                test -d /opt/node-tools/node_modules/@upstash/context7-mcp
+              '
+          done
+
+      - name: Smoke test Codex image
+        if: steps.changes.outputs.image == 'true'
+        run: |
+          test "$(docker run --rm --network none --entrypoint id codex-sandbox:ci -u)" = 1000
+          docker run --rm --network none --entrypoint ps codex-sandbox:ci --version
+          expected="$(node -p "require('./sandbox/codex/package.json').dependencies['@openai/codex']")"
+          test "$(docker run --rm --network none --entrypoint codex codex-sandbox:ci --version)" = "codex-cli $expected"
+          test "$(docker run --rm --network none codex-sandbox:ci sandbox-agent-version)" = "$expected"
+          test "$(docker image inspect --format '{{index .Config.Labels "sandbox.agent.package"}}' codex-sandbox:ci)" = @openai/codex
+          test "$(docker image inspect --format '{{json .Config.Cmd}}' codex-sandbox:ci)" = '["/usr/local/bin/sandbox-start"]'
+          docker run --rm --network none --entrypoint grep codex-sandbox:ci -q '^exec codex ' /usr/local/libexec/sandbox/agent
+          test "$(docker run --rm --network none --entrypoint git codex-sandbox:ci ls-remote --get-url git@github.com:owner/repo.git)" = https://github.com/owner/repo.git
+          test "$(docker run --rm --network none --entrypoint git codex-sandbox:ci config --get-urlmatch credential.helper https://github.com/owner/repo)" = '!gh auth git-credential'
+          docker run --rm --network none --entrypoint test codex-sandbox:ci -x /usr/local/libexec/sandbox/auth
+          if docker run --rm --network none codex-sandbox:ci sandbox-auth unsupported; then
+            echo 'sandbox-auth accepted an unsupported action' >&2
+            exit 1
+          fi
+
+      - name: Verify SSH identity for a non-default runtime UID
+        if: steps.changes.outputs.image == 'true'
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges:true --tmpfs /tmp --user 7777:7777 \
+            codex-sandbox:ci sh -ceu '
+              test "$(id -u)" = 7777
+              test "$(id -g)" = 7777
+              test "$(getent passwd 7777 | cut -d: -f1)" = codex
+              test "$(getent group 7777 | cut -d: -f1)" = codex
+              ssh -G -F /dev/null localhost >/dev/null
+            '
+
+      - name: Smoke test Claude image
+        if: steps.changes.outputs.image == 'true'
+        run: |
+          test "$(docker run --rm --network none --entrypoint id claude-sandbox:ci -u)" = 1000
+          expected="$(node -p "require('./sandbox/claude/package.json').dependencies['@anthropic-ai/claude-code']")"
+          test "$(docker run --rm --network none --entrypoint claude claude-sandbox:ci --version)" = "$expected (Claude Code)"
+          test "$(docker run --rm --network none claude-sandbox:ci sandbox-agent-version)" = "$expected"
+          test "$(docker image inspect --format '{{index .Config.Labels "sandbox.agent.package"}}' claude-sandbox:ci)" = @anthropic-ai/claude-code
+          test "$(docker image inspect --format '{{json .Config.Cmd}}' claude-sandbox:ci)" = '["/usr/local/bin/sandbox-start"]'
+          docker run --rm --network none --entrypoint grep claude-sandbox:ci -q '^exec claude ' /usr/local/libexec/sandbox/agent
+          docker run --rm --network none --entrypoint test claude-sandbox:ci -x /usr/local/libexec/sandbox/auth
+          if docker run --rm --network none claude-sandbox:ci sandbox-auth unsupported; then
+            echo 'sandbox-auth accepted an unsupported action' >&2
+            exit 1
+          fi
+          if docker run --rm --network none --entrypoint sh claude-sandbox:ci -c 'command -v codex'; then
+            echo 'Claude image unexpectedly contains Codex' >&2
+            exit 1
+          fi
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges:true --tmpfs /tmp --user 7777:7777 \
+            claude-sandbox:ci sh -ceu '
+              test "$(id -u)" = 7777
+              test "$(getent passwd 7777 | cut -d: -f1)" = claude
+              test "$(getent group 7777 | cut -d: -f1)" = claude
+              test "$CLAUDE_CONFIG_DIR" = /home/claude/.claude
+              test "$DISABLE_AUTOUPDATER" = 1
+              test "$CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" = 1
+              test "$ENABLE_CLAUDEAI_MCP_SERVERS" = false
+              CLAUDE_CONFIG_DIR=/tmp/claude-state /usr/local/libexec/sandbox/init.d/10-context7-config
+              test "$(jq -r .mcpServers.context7.command /tmp/claude-state/.claude.json)" = context7-mcp
+              CLAUDE_CONFIG_DIR=/tmp/claude-state /usr/local/libexec/sandbox/init.d/20-settings
+              test "$(jq -r .skipDangerousModePermissionPrompt /tmp/claude-state/settings.json)" = true
+              ssh -G -F /dev/null localhost >/dev/null
+            '
+
+      # The unprivileged rootless Docker daemon does not start on this runner;
+      # the audit's Docker part runs locally (see sandbox/README.md).
+      - name: Audit sandbox sessions for both agents
+        if: steps.changes.outputs.image == 'true'
+        run: sandbox/bin/audit-sandbox --no-docker

@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+# Sessions (SANDBOX_SESSION=1) get the sandbox's guide and rules, from the
+# image, as developer instructions on every launch.
+if [ "${SANDBOX_SESSION:-}" = 1 ]; then
+    set -- -c "developer_instructions=$(jq -Rs . /usr/local/share/sandbox/session-instructions.md)" "$@"
+fi
+exec codex -a never --sandbox danger-full-access "$@"

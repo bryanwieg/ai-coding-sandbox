@@ -1,0 +1,9 @@
+#!/bin/sh
+# Session /tmp is noexec, so go test and go run build into GOTMPDIR, which the
+# image places in the project's cache volume. go does not create GOTMPDIR itself.
+set -eu
+
+if [ -n "${GOTMPDIR:-}" ]; then
+    mkdir -p "$GOTMPDIR"
+fi
+exec /usr/local/go/bin/go "$@"

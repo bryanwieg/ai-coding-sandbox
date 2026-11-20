@@ -1,0 +1,27 @@
+#!/bin/sh
+# Register the image's local Context7 stdio server as a user-scope MCP server.
+# CONTEXT7_API_KEY reaches it through the inherited environment, so the key is
+# never written into the state volume.
+set -eu
+
+state_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+config_file="$state_dir/.claude.json"
+
+mkdir -p "$state_dir"
+temporary_file=$(mktemp "$state_dir/.claude.json.context7.XXXXXX")
+
+if [ -s "$config_file" ]; then
+    source_file=$config_file
+else
+    source_file=/dev/null
+fi
+
+if jq -s '(.[0] // {}) | .mcpServers.context7 = {type: "stdio", command: "context7-mcp", args: [], env: {}}' \
+    "$source_file" > "$temporary_file"; then
+    mv "$temporary_file" "$config_file"
+else
+    rm -f "$temporary_file"
+    echo "Unable to update $config_file; Context7 was not configured." >&2
+fi
+
+sandbox-check-context7

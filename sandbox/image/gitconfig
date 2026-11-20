@@ -1,0 +1,18 @@
+# GitHub is reached over HTTPS with the GitHub CLI's stored token, never SSH.
+# SSH-style GitHub remotes are rewritten, so existing clones keep working.
+[credential "https://github.com"]
+	helper =
+	helper = !gh auth git-credential
+[credential "https://gist.github.com"]
+	helper =
+	helper = !gh auth git-credential
+[url "https://github.com/"]
+	insteadOf = git@github.com:
+	insteadOf = ssh://git@github.com/
+# Git LFS filters, set system-wide because the session's home is read-only and
+# `git lfs install` cannot write a user configuration.
+[filter "lfs"]
+	clean = git-lfs clean -- %f
+	smudge = git-lfs smudge -- %f
+	process = git-lfs filter-process
+	required = true

@@ -1,0 +1,32 @@
+#!/bin/sh
+# Adds the sandbox shell functions (shell/sandbox.sh) to a shell startup file:
+# by default ~/.zshrc for zsh and ~/.bashrc for bash, from $SHELL. It appends
+# one marked source line, once; running it again changes nothing.
+#
+#   sandbox/bin/install-shell-functions [RC_FILE]
+set -eu
+
+root_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+functions="$root_dir/shell/sandbox.sh"
+marker='# ai-coding-sandbox shell functions'
+
+if [ "$#" -gt 1 ]; then
+    echo 'Usage: install-shell-functions [RC_FILE]' >&2
+    exit 2
+fi
+if [ "$#" -eq 1 ]; then
+    rc=$1
+else
+    case "${SHELL##*/}" in
+        zsh) rc=${ZDOTDIR:-$HOME}/.zshrc ;;
+        bash) rc=$HOME/.bashrc ;;
+        *) echo "install-shell-functions: unsupported shell ${SHELL:-unset}; name the startup file." >&2; exit 2 ;;
+    esac
+fi
+
+if [ -f "$rc" ] && grep -Fxq "$marker" "$rc"; then
+    echo "The sandbox shell functions are already in $rc."
+    exit 0
+fi
+printf '\n%s\n. "%s"\n' "$marker" "$functions" >> "$rc"
+echo "Added the sandbox shell functions to $rc. Open a new shell, or run: . \"$rc\""

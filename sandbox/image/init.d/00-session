@@ -1,0 +1,115 @@
+#!/bin/sh
+# Startup checks for sessions, which the Compose file marks with
+# SANDBOX_SESSION=1; the image run on its own (as by sandbox-init) skips them.
+# Refusals stop the launch with the fix; warnings name the command that
+# resolves them.
+set -eu
+
+[ "${SANDBOX_SESSION:-}" = 1 ] || exit 0
+
+refuse() {
+    printf 'Sandbox session refused: %s\n' "$1" >&2
+    shift
+    for line in "$@"; do
+        printf '  %s\n' "$line" >&2
+    done
+    exit 1
+}
+warn() {
+    printf 'Warning: %s\n' "$1" >&2
+    shift
+    for line in "$@"; do
+        printf '  %s\n' "$line" >&2
+    done
+}
+
+reference=${SANDBOX_REFERENCE:-}
+if [ "$reference" != / ]; then reference=${reference%/}; fi
+host_pwd=${HOST_PWD:?}
+host_pwd=${host_pwd%/}
+# The session starts in the project folder, /workspace/<Compose project>.
+project=$PWD
+compose='docker compose --env-file .sandbox/env'
+
+for name in env agent.env; do
+    env_file=$project/.sandbox/$name
+    # Existing projects need not provide the optional agent environment file.
+    if [ "$name" = agent.env ] && [ ! -e "$env_file" ] && [ ! -L "$env_file" ]; then
+        continue
+    fi
+    if [ -f "$env_file" ] && [ ! -L "$env_file" ]; then
+        owner=$(stat -c %u "$env_file")
+        mode=$(stat -c %a "$env_file")
+        if [ "$owner" != "$(id -u)" ]; then
+            refuse ".sandbox/$name must belong to you, because it holds secrets." \
+                "Run: chown $(id -u) .sandbox/$name"
+        fi
+        if [ "$mode" != 600 ]; then
+            refuse ".sandbox/$name must be readable only by you, because it holds secrets." \
+                "Run: chmod 600 .sandbox/$name"
+        fi
+    else
+        refuse ".sandbox/$name is missing or not a regular file." \
+            'Create it with sandbox-init-config; see the sandbox README.'
+    fi
+done
+
+key_dir=${SANDBOX_SSH_KEY_DIR:-}
+key_dir=${key_dir%/}
+for exposed_root in "$host_pwd" "$reference"; do
+    [ -n "$exposed_root" ] || continue
+    case "$key_dir/" in
+        "${exposed_root%/}/"*)
+            refuse "the SSH key folder is inside the project or reference root, where every session could read it." \
+                "Move the keys out of $exposed_root and set SANDBOX_SSH_KEY_DIR in .sandbox/env."
+            ;;
+    esac
+done
+# The retired run-sandbox launcher kept keys in the workspace's ssh-keys/ and
+# hid it from agents; sessions do not, so private keys there must move. A
+# leftover .gitkeep and public keys are harmless.
+for exposed_root in "$project" /reference; do
+    if [ -d "$exposed_root/ssh-keys" ]; then
+        exposed=$(find "$exposed_root/ssh-keys" -mindepth 1 ! -name .gitkeep ! -name '*.pub' -exec basename {} \; 2>/dev/null | sort | tr '\n' ' ')
+        if [ -n "$exposed" ]; then
+            refuse "$exposed_root/ssh-keys holds files that this session could read: $exposed" \
+                'Move the private keys to ~/.config/ai-coding-sandbox/ssh-keys (or SANDBOX_SSH_KEY_DIR).'
+        fi
+    fi
+done
+
+policy=$project/.sandbox/egress-policy.yaml
+if [ -f "$policy" ]; then
+    if ! sandbox-policy check project "$policy" 2>/dev/null; then
+        warn 'the project egress policy is invalid, so only the base policy applies.' \
+            "Check it with: $compose run --rm trust"
+    else
+        hash=$(sandbox-policy hash "$policy")
+        id=$(sandbox-policy trust-id "$host_pwd")
+        if [ -n "$hash" ] && [ "$(cat "/run/sandbox-trust/$id.sha256" 2>/dev/null || :)" != "$hash" ]; then
+            warn 'the project egress policy is not approved, so only the base policy applies.' \
+                "Review and approve it with: $compose run --rm trust"
+        elif sandbox-policy additions "$policy" | grep -qx 'unrestricted all-destinations'; then
+            warn 'the project egress policy is unrestricted: the proxy allows every destination.' \
+                'Remove "unrestricted_out: true" from .sandbox/egress-policy.yaml to restore the allowlist.'
+        fi
+    fi
+fi
+
+case ",${SANDBOX_PROFILES:-}," in
+    *,docker,*)
+        if [ "${SANDBOX_DAEMON_EGRESS:-proxied}" = direct ]; then
+            warn 'SANDBOX_DAEMON_EGRESS=direct: containers in the session daemon bypass the egress proxy.' \
+                'Remove it from .sandbox/env to route them through the proxy again.'
+        fi
+        ;;
+esac
+
+case ",${SANDBOX_PROFILES:-}," in
+    *,ssh,*)
+        if ! ssh-add -l >/dev/null 2>&1; then
+            warn 'SSH is enabled, but no keys are unlocked.' \
+                "Unlock them with: $compose run --rm ssh-unlock"
+        fi
+        ;;
+esac

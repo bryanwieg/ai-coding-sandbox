@@ -1,0 +1,14 @@
+#!/bin/sh
+# Default command of every sandbox image: run the image's agent-specific
+# initialization in name order, then hand off to its agent launcher.
+# Command overrides (a shell, an auth command) bypass this script entirely.
+set -eu
+
+libexec_dir=/usr/local/libexec/sandbox
+
+for script in "$libexec_dir"/init.d/*; do
+    [ -x "$script" ] || continue
+    "$script"
+done
+
+exec "$libexec_dir/agent" "$@"

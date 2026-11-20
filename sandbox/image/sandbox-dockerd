@@ -1,0 +1,150 @@
+#!/bin/sh
+# Session daemon entrypoint for the generic session-daemon image. It starts
+# empty unless SANDBOX_DOCKER_DATA=persistent keeps the data root between
+# runs, runs the rootless daemon, and stops it once SANDBOX_DOCKER_IDLE_CHECKS
+# consecutive checks, one every SANDBOX_DOCKER_IDLE_INTERVAL seconds, find no
+# client connection on port 2376 open and none accepted since the previous
+# check, or when no client connects within SANDBOX_DOCKER_START_GRACE seconds. The agent
+# holds one connection for its whole session, so the daemon ends with it.
+# With ephemeral data, which is wiped right after, the daemon gives running
+# containers SANDBOX_DOCKER_STOP_TIMEOUT seconds (default 2) to stop instead
+# of dockerd's 15; persistent data keeps dockerd's default.
+# A launch hold, /tmp/launch-hold touched by the host's sandbox command just
+# before it starts a session, counts as activity for
+# SANDBOX_DOCKER_LAUNCH_HOLD seconds, so the daemon does not stop between that
+# command seeing it running and the new session connecting.
+#
+# Until its first client connects, it also holds an idle connection to the
+# egress proxy named in HTTPS_PROXY. Starting the daemon is the slow step of a
+# session launch, and no agent holds the proxy's lease yet, so without this
+# the proxy can idle out while Compose waits and the launch fails. The hold is
+# bounded by the daemon's own start grace period.
+set -eu
+
+data=$XDG_DATA_HOME/docker
+interval=${SANDBOX_DOCKER_IDLE_INTERVAL:-1}
+checks=${SANDBOX_DOCKER_IDLE_CHECKS:-10}
+grace=${SANDBOX_DOCKER_START_GRACE:-120}
+hold=${SANDBOX_DOCKER_LAUNCH_HOLD:-30}
+retention=${SANDBOX_DOCKER_DATA:-ephemeral}
+
+# Every supported UID has a fixed "sandbox" entry whose group equals the UID;
+# newuidmap and newgidmap accept only that identity.
+if [ "$(id -un 2>/dev/null)" != sandbox ]; then
+    echo "sandbox-dockerd: UID $(id -u) is not supported; use a UID from 500 to 65533." >&2
+    exit 1
+fi
+case $retention in
+    ephemeral | persistent) ;;
+    *)
+        echo "sandbox-dockerd: SANDBOX_DOCKER_DATA must be ephemeral or persistent; got '$retention'." >&2
+        exit 1
+        ;;
+esac
+if [ "$(id -g)" != "$(id -u)" ]; then
+    echo "sandbox-dockerd: run with group $(id -u), equal to the UID; got group $(id -g)." >&2
+    exit 1
+fi
+if [ -n "${SANDBOX_GID:-}" ] && [ "$SANDBOX_GID" != "$(id -g)" ]; then
+    echo "sandbox-dockerd: your group $SANDBOX_GID differs from your UID; files that containers create get group $(id -g)." >&2
+fi
+
+# Files under the data root belong to subordinate IDs, so only the user
+# namespace that owns them can remove them. Persistent data is kept.
+wipe() {
+    [ "$retention" = ephemeral ] || return 0
+    [ ! -e "$data" ] || rootlesskit rm -rf "$data"
+}
+
+# Holds the proxy connection in its own process group, reconnecting within a
+# second when Squid closes it, until stop_proxy_hold ends the whole group.
+proxy=${HTTPS_PROXY:-}
+proxy=${proxy#*://}
+proxy=${proxy%%/*}
+proxy_hold=
+start_proxy_hold() {
+    case $proxy in
+        ?*:[0-9]*) ;;
+        *) return 0 ;;
+    esac
+    # shellcheck disable=SC2016 # expanded by the inner shell
+    setsid sh -c 'while :; do nc "$1" "$2" -e sh -c "cat >/dev/null" >/dev/null 2>&1; sleep 1; done' \
+        sandbox-proxy-hold "${proxy%:*}" "${proxy##*:}" &
+    proxy_hold=$!
+}
+stop_proxy_hold() {
+    [ -n "$proxy_hold" ] || return 0
+    kill -TERM -- "-$proxy_hold" 2>/dev/null || :
+    proxy_hold=
+}
+
+# Only the default command takes added daemon flags; see dockerd-entrypoint.sh.
+# It also listens on /run/docker.sock (/var/run/docker.sock), a path only the
+# daemon's own mount namespace sees, so a container bind-mounts it with
+# "-v /var/run/docker.sock:/var/run/docker.sock" to manage this same daemon.
+# That grants what the agent already has over TLS and nothing more. The
+# client lease counts only TCP clients, so socket users do not keep the
+# daemon up.
+if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
+    if [ "$retention" = ephemeral ]; then
+        set -- --shutdown-timeout="${SANDBOX_DOCKER_STOP_TIMEOUT:-2}" "$@"
+    fi
+    set -- --host=unix:///run/docker.sock "$@"
+fi
+
+wipe
+start_proxy_hold
+dockerd-entrypoint.sh "$@" &
+daemon=$!
+trap 'kill -TERM "$daemon" 2>/dev/null || :' TERM INT
+
+# Connections accepted so far (PassiveOpens in this network namespace), so a
+# session shorter than one check still counts as activity.
+accepted() {
+    awk '/^Tcp:/ { if (!h) { for (i = 1; i <= NF; i++) if ($i == "PassiveOpens") f = i; h = 1 } else print $f }' /proc/net/snmp
+}
+
+connected() {
+    netstat -tn 2>/dev/null | awk '$4 ~ /:2376$/ && $6 == "ESTABLISHED" { found = 1 } END { exit !found }'
+}
+
+held() {
+    [ -f /tmp/launch-hold ] &&
+        [ $(($(date +%s) - $(stat -c %Y /tmp/launch-hold))) -lt "$hold" ]
+}
+
+stop() {
+    printf 'sandbox-dockerd: %s; stopping the session daemon.\n' "$1" >&2
+    kill -TERM "$daemon" 2>/dev/null || :
+}
+
+seen=false
+idle=0
+elapsed=0
+last=$(accepted)
+while kill -0 "$daemon" 2>/dev/null; do
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+    now=$(accepted)
+    if connected || [ "$now" != "$last" ]; then
+        # The agent now holds the proxy's lease itself.
+        stop_proxy_hold
+        seen=true
+        idle=0
+        last=$now
+    elif held; then
+        idle=0
+    elif [ "$seen" = true ]; then
+        idle=$((idle + 1))
+        if [ "$idle" -ge "$checks" ]; then
+            stop 'no client connected'
+            break
+        fi
+    elif [ "$elapsed" -ge "$grace" ]; then
+        stop "no client connected within ${grace}s"
+        break
+    fi
+done
+stop_proxy_hold
+wait "$daemon" || :
+wipe

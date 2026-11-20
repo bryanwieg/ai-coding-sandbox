@@ -1,0 +1,10 @@
+#!/bin/sh
+# VS Code's Dev Containers attach installs its server and helper scripts in
+# the home, which is read-only. The image links ~/.vscode-server and
+# ~/.vscode-remote-containers into the project's cache volume, the one
+# writable location that may hold executables; create the link targets, since
+# a dangling link stops VS Code's mkdir -p.
+set -eu
+
+[ -d /cache ] && [ -w /cache ] || exit 0
+mkdir -p /cache/vscode/server /cache/vscode/remote-containers

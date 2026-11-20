@@ -1,0 +1,226 @@
+# Base egress policy built into the session proxy image. Every project gets
+# these names; a project adds its own in .sandbox/egress-policy.yaml, which
+# applies only after it is approved with the trust command.
+https:
+  - .openai.com
+  - .chatgpt.com
+  - .oaiusercontent.com
+  - .context7.com
+  - .anthropic.com
+  - .claude.ai
+  - .claude.com
+  # Claude's user content hosts, such as artifact frames.
+  - .claudeusercontent.com
+  # Google Cloud Storage, where Claude Code's /plugin reads install counts.
+  # The whole service: any bucket's objects are reachable.
+  - storage.googleapis.com
+  - .github.com
+  - .github.io
+  - .githubusercontent.com
+  - .githubcopilot.com
+  # GitHub's LFS object storage. Only this bucket, not all of S3.
+  - github-cloud.s3.amazonaws.com
+  # Docker Hub, for image pulls by the session Docker daemon.
+  - .docker.io
+  - .docker.com
+  # Additional container registries: GHCR and LSCR.
+  - .ghcr.io
+  - .lscr.io
+  # The VS Code Marketplace, for extensions installed by an attached
+  # VS Code window, and its download CDN.
+  - marketplace.visualstudio.com
+  - .gallery.vsassets.io
+  - .gallerycdn.vsassets.io
+  - main.vscode-cdn.net
+  # GitLab, for Git over HTTPS, its API and its container registry.
+  - .gitlab.com
+  # PyPI: its index and package files, for pip into a project virtualenv.
+  - pypi.org
+  - files.pythonhosted.org
+  # The Go module proxy and checksum database.
+  - proxy.golang.org
+  - sum.golang.org
+  # Ubuntu's package archive, security updates and keyserver.
+  - archive.ubuntu.com
+  - security.ubuntu.com
+  - keyserver.ubuntu.com
+  # Documentation and source code, for reading (WebFetch, curl). Official
+  # documentation, reference and standards sites of large projects, where
+  # a visitor cannot publish anything or read the access logs. Not included:
+  # package registries (they would install code), hosts where anyone can
+  # create a subdomain (*.readthedocs.io), and sites that accept anonymous
+  # edits (Wikipedia). A project adds others to its own policy.
+  # Python
+  - docs.python.org
+  - peps.python.org
+  - packaging.python.org
+  - typing.python.org
+  - pip.pypa.io
+  - setuptools.pypa.io
+  - docs.pytest.org
+  - docs.astral.sh
+  - mypy.readthedocs.io
+  - requests.readthedocs.io
+  - scapy.readthedocs.io
+  - pyyaml.org
+  - docs.pydantic.dev
+  - fastapi.tiangolo.com
+  - flask.palletsprojects.com
+  - jinja.palletsprojects.com
+  - click.palletsprojects.com
+  - docs.djangoproject.com
+  - numpy.org
+  - pandas.pydata.org
+  - docs.sqlalchemy.org
+  - www.sqlalchemy.org
+  # JavaScript, TypeScript and the web platform
+  - developer.mozilla.org
+  - nodejs.org
+  - docs.npmjs.com
+  - www.npmjs.com
+  - www.typescriptlang.org
+  - tc39.es
+  - react.dev
+  - nextjs.org
+  - vuejs.org
+  - vite.dev
+  - vitest.dev
+  - jestjs.io
+  - eslint.org
+  - prettier.io
+  - expressjs.com
+  - docs.deno.com
+  - bun.sh
+  - www.w3.org
+  - html.spec.whatwg.org
+  # Go, Rust, PHP, JVM, .NET, C and C++, Ruby
+  - go.dev
+  - pkg.go.dev
+  - doc.rust-lang.org
+  - rust-lang.org
+  - www.rust-lang.org
+  - docs.rs
+  - www.php.net
+  - getcomposer.org
+  - docs.phpunit.de
+  - symfony.com
+  - laravel.com
+  - docs.oracle.com
+  - openjdk.org
+  - kotlinlang.org
+  - docs.gradle.org
+  - maven.apache.org
+  - learn.microsoft.com
+  - devblogs.microsoft.com
+  - code.visualstudio.com
+  - en.cppreference.com
+  - gcc.gnu.org
+  - www.gnu.org
+  - clang.llvm.org
+  - llvm.org
+  - cmake.org
+  - docs.ruby-lang.org
+  - ruby-doc.org
+  - guides.rubyonrails.org
+  - api.rubyonrails.org
+  # Shell, Unix and Git
+  - man7.org
+  - manpages.debian.org
+  - manpages.ubuntu.com
+  - pubs.opengroup.org
+  - tldp.org
+  - mywiki.wooledge.org
+  - www.shellcheck.net
+  - git-scm.com
+  - jqlang.org
+  - www.crufty.net
+  # BSD
+  - man.freebsd.org
+  - docs.freebsd.org
+  - www.freebsd.org
+  - wiki.freebsd.org
+  - cgit.freebsd.org
+  - man.openbsd.org
+  - www.openbsd.org
+  # VyOS: its documentation and release notes
+  - docs.vyos.io
+  - blog.vyos.io
+  # Linux distributions and the kernel
+  - wiki.archlinux.org
+  - wiki.debian.org
+  - www.debian.org
+  - help.ubuntu.com
+  - documentation.ubuntu.com
+  - docs.fedoraproject.org
+  - fedoraproject.org
+  - packages.fedoraproject.org
+  - src.fedoraproject.org
+  - fedoramagazine.org
+  - docs.redhat.com
+  - docs.kernel.org
+  - www.kernel.org
+  - git.kernel.org
+  # Containers, servers, infrastructure and cloud. Docker's documentation
+  # (docs.docker.com) is covered by .docker.com above.
+  - kubernetes.io
+  - helm.sh
+  - docs.podman.io
+  - containers.dev
+  # Komodo, the container deployment manager
+  - komo.do
+  - nginx.org
+  - httpd.apache.org
+  - caddyserver.com
+  - doc.traefik.io
+  - docs.ansible.com
+  - developer.hashicorp.com
+  - docs.aws.amazon.com
+  - cloud.google.com
+  # Databases
+  - www.postgresql.org
+  - dev.mysql.com
+  - mariadb.com
+  - www.sqlite.org
+  - redis.io
+  - www.mongodb.com
+  # Networking, security and standards
+  - www.rfc-editor.org
+  - datatracker.ietf.org
+  - www.iana.org
+  - json-schema.org
+  - yaml.org
+  - toml.io
+  - semver.org
+  - docs.openssl.org
+  - www.openssh.org
+  - www.squid-cache.org
+  - nlnetlabs.nl
+  - unbound.docs.nlnetlabs.nl
+  - www.isc.org
+  - kb.isc.org
+  - thekelleys.org.uk
+  - nmap.org
+  - www.tcpdump.org
+  - www.wireshark.org
+  - owasp.org
+  - cheatsheetseries.owasp.org
+  - www.cve.org
+  - nvd.nist.gov
+  - modelcontextprotocol.io
+  # Questions and answers
+  - stackoverflow.com
+  - serverfault.com
+  - superuser.com
+  - askubuntu.com
+  - .stackexchange.com
+  # Source code hosting and browsing, beyond GitHub and GitLab
+  - codeberg.org
+  - bitbucket.org
+  - sourceware.org
+  - salsa.debian.org
+  - git.savannah.gnu.org
+  - sourcegraph.com
+# Git over SSH (port 22). Host keys still come from the project's
+# .sandbox/ssh/known_hosts.
+ssh:
+  - gitlab.com

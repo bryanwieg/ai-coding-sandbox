@@ -1,0 +1,14 @@
+#!/bin/sh
+# Print the version of the image's agent CLI package, named by
+# SANDBOX_AGENT_PACKAGE (also the image's sandbox.agent.package label):
+#   sandbox-agent-version            the version installed in this image
+#   sandbox-agent-version --latest   the latest release on the npm registry
+# --latest needs a network; the host launcher runs it outside the sandbox.
+set -eu
+
+package=${SANDBOX_AGENT_PACKAGE:?This image does not declare an agent package}
+case "${1:-}" in
+    '') exec node -p "require('/opt/agent/node_modules/$package/package.json').version" ;;
+    --latest) exec npm view --cache /tmp/npm-cache --update-notifier=false "$package" version ;;
+    *) echo 'Usage: sandbox-agent-version [--latest]' >&2; exit 2 ;;
+esac

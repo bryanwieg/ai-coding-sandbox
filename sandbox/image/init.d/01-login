@@ -1,0 +1,32 @@
+#!/bin/sh
+# Signs the agent and GitHub in when needed, in sessions (SANDBOX_SESSION=1).
+# Without a terminal it only names the commands to run.
+set -eu
+
+[ "${SANDBOX_SESSION:-}" = 1 ] || exit 0
+
+interactive=false
+[ -t 0 ] && [ -t 1 ] && interactive=true
+compose='docker compose --env-file .sandbox/env run --rm'
+
+if ! sandbox-auth status >/dev/null 2>&1; then
+    if [ "$interactive" = true ]; then
+        sandbox-auth login || echo 'Agent sign-in did not complete; the agent may ask again.' >&2
+    else
+        echo "The agent is not signed in; run: $compose ${SANDBOX_USER:-codex} sandbox-auth login" >&2
+    fi
+fi
+
+# Git reaches GitHub through /etc/gitconfig's gh credential helper. Any Git
+# setup gh attempts during login goes to a disposable file, because the home
+# directory is read-only.
+if ! gh auth status --hostname github.com >/dev/null 2>&1; then
+    if [ "$interactive" = true ]; then
+        echo 'Complete GitHub authentication using the URL and device code below.' >&2
+        GIT_CONFIG_GLOBAL=/tmp/gh-login.gitconfig \
+            gh auth login --hostname github.com --git-protocol https --web ||
+            echo 'GitHub sign-in did not complete; GitHub access will fail until it does.' >&2
+    else
+        echo "GitHub is not signed in; run: $compose ${SANDBOX_USER:-codex} gh auth login --hostname github.com --git-protocol https --web" >&2
+    fi
+fi

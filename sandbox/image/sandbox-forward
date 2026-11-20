@@ -1,0 +1,93 @@
+#!/bin/sh
+# Port forwarder entrypoint for the session-forwarder image. It relays each
+# port in the published-port slots to the same port of the session daemon:
+# SANDBOX_PUBLISH_PORTS, SANDBOX_PUBLISH_PORTS_2 and SANDBOX_PUBLISH_PORTS_3
+# for TCP, and SANDBOX_PUBLISH_UDP_PORTS, _UDP_PORTS_2 and _UDP_PORTS_3 for
+# UDP, each one port or a contiguous range, at most 100 ports in all. It
+# exits when the daemon's container is gone. It checks the daemon by name
+# rather than by connecting, because the daemon counts connections to its
+# port as a client lease.
+set -eu
+
+interval=${SANDBOX_FORWARD_INTERVAL:-1}
+checks=${SANDBOX_FORWARD_CHECKS:-3}
+# A UDP relay child serves one client address; it ends after this many idle
+# seconds so departed clients do not accumulate.
+udp_idle=${SANDBOX_FORWARD_UDP_IDLE:-300}
+max_ports=100
+
+fail() {
+    printf 'sandbox-forward: %s\n' "$1" >&2
+    exit 1
+}
+
+valid_port() {
+    case "$1" in
+        ''|0*|*[!0-9]*) return 1 ;;
+    esac
+    [ "${#1}" -le 5 ] && [ "$1" -le 65535 ]
+}
+
+# Validates every slot first, so a bad value starts no relay. Prints one
+# "PROTOCOL FIRST LAST" line per set slot.
+slots() {
+    total=0
+    for slot in tcp:"${SANDBOX_PUBLISH_PORTS:-}" tcp:"${SANDBOX_PUBLISH_PORTS_2:-}" \
+        tcp:"${SANDBOX_PUBLISH_PORTS_3:-}" udp:"${SANDBOX_PUBLISH_UDP_PORTS:-}" \
+        udp:"${SANDBOX_PUBLISH_UDP_PORTS_2:-}" udp:"${SANDBOX_PUBLISH_UDP_PORTS_3:-}"; do
+        protocol=${slot%%:*}
+        ports=${slot#*:}
+        [ -n "$ports" ] || continue
+        case "$ports" in
+            *-*) first=${ports%%-*}; last=${ports#*-} ;;
+            *) first=$ports; last=$ports ;;
+        esac
+        if ! valid_port "$first" || ! valid_port "$last" || [ "$first" -gt "$last" ]; then
+            fail "use one port or an ascending range such as 8000-8009: $ports"
+        fi
+        total=$((total + last - first + 1))
+        [ "$total" -le "$max_ports" ] || fail "at most $max_ports ports can be published in all"
+        printf '%s %s %s\n' "$protocol" "$first" "$last"
+    done
+}
+
+plan=$(slots)
+[ -n "$plan" ] || exit 0
+
+pids=
+while read -r protocol first last; do
+    port=$first
+    while [ "$port" -le "$last" ]; do
+        if [ "$protocol" = udp ]; then
+            socat -T "$udp_idle" "UDP-LISTEN:$port,fork,reuseaddr" "UDP:docker:$port" &
+        else
+            socat "TCP-LISTEN:$port,fork,reuseaddr" "TCP:docker:$port" &
+        fi
+        pids="$pids $!"
+        port=$((port + 1))
+    done
+    echo "sandbox-forward: forwarding $protocol ports $first-$last to the session daemon." >&2
+done <<EOF
+$plan
+EOF
+# shellcheck disable=SC2086 # pids is a list of process IDs.
+trap 'kill $pids 2>/dev/null || :' EXIT
+trap 'exit 0' TERM INT
+
+missing=0
+while :; do
+    sleep "$interval"
+    for pid in $pids; do
+        kill -0 "$pid" 2>/dev/null || fail 'a port relay stopped; exiting.'
+    done
+    # A lookup of a vanished name can block on resolver retries; bound it.
+    if timeout 2 getent hosts docker >/dev/null 2>&1; then
+        missing=0
+    else
+        missing=$((missing + 1))
+        if [ "$missing" -ge "$checks" ]; then
+            echo 'sandbox-forward: the session daemon is gone; exiting.' >&2
+            exit 0
+        fi
+    fi
+done

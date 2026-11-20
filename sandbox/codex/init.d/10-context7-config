@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+
+state_dir="${CODEX_HOME:-$HOME/.codex}"
+config_file="$state_dir/config.toml"
+temporary_file="$state_dir/.config.toml.context7.XXXXXX"
+
+mkdir -p "$state_dir"
+temporary_file=$(mktemp "$temporary_file")
+
+if [ -f "$config_file" ]; then
+    awk '
+        /^[[:space:]]*\[mcp_servers\.context7\][[:space:]]*(#.*)?$/ { in_context7 = 1; next }
+        in_context7 && /^[[:space:]]*\[/ { in_context7 = 0 }
+        !in_context7 { print }
+    ' "$config_file" > "$temporary_file"
+else
+    : > "$temporary_file"
+fi
+
+cat >> "$temporary_file" <<'EOF'
+
+[mcp_servers.context7]
+command = "context7-mcp"
+env_vars = ["CONTEXT7_API_KEY"]
+EOF
+
+mv "$temporary_file" "$config_file"
+
+sandbox-check-context7

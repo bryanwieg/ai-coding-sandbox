@@ -1,0 +1,13 @@
+/*
+!/.gitignore
+!/.gitmodules
+!/AGENTS.md
+!/CLAUDE.md
+!/README.md
+!/todo.md
+!/.github/
+!/sandbox/
+!/src/
+
+/src/*
+!/src/.gitkeep

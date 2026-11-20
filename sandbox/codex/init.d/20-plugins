@@ -1,0 +1,45 @@
+#!/bin/sh
+set -eu
+
+plugin_manifest=/usr/local/share/codex/plugins.txt
+state_dir="${CODEX_HOME:-$HOME/.codex}"
+installed_hash_file="$state_dir/plugins.manifest.sha256"
+
+if [ ! -s "$plugin_manifest" ]; then
+    exit 0
+fi
+
+manifest_hash=$(sha256sum "$plugin_manifest" | cut -d ' ' -f 1)
+installed_hash=$(sed -n '1p' "$installed_hash_file" 2>/dev/null || true)
+
+if [ "$manifest_hash" = "$installed_hash" ]; then
+    exit 0
+fi
+
+if [ ! -f "$state_dir/auth.json" ]; then
+    echo 'Codex plugins will be installed after login on the next launch.' >&2
+    exit 0
+fi
+
+failed=false
+while IFS= read -r plugin; do
+    case "$plugin" in
+        ''|'#'*) continue ;;
+    esac
+
+    if ! printf '%s\n' "$plugin" | grep -Eq '^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$'; then
+        echo "Invalid Codex plugin selector: $plugin" >&2
+        exit 1
+    fi
+
+    if ! codex plugin add "$plugin"; then
+        echo "Unable to install Codex plugin: $plugin" >&2
+        failed=true
+    fi
+done < "$plugin_manifest"
+
+if [ "$failed" = false ]; then
+    printf '%s\n' "$manifest_hash" > "$installed_hash_file"
+else
+    echo 'Plugin synchronization incomplete; it will be retried next launch.' >&2
+fi

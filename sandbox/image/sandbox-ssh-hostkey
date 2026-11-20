@@ -1,0 +1,101 @@
+#!/bin/sh
+# Prints the known_hosts line for an SSH host this session does not know yet,
+# for the user to add to .sandbox/ssh/known_hosts, with its fingerprint to
+# check. It connects with the same client configuration as ssh (aliases,
+# ports, the proxy) and records the host key into a temporary file. Every
+# authentication method and the agent are disabled, so it never logs in or
+# runs anything, and the read-only known_hosts stays untouched. A key that
+# differs from a listed one of the same type is reported as a change, not
+# offered as a replacement line.
+#
+# Usage: sandbox-ssh-hostkey [-F CONFIG] [-p PORT] [USER@]HOST
+set -eu
+
+usage() {
+    echo 'usage: sandbox-ssh-hostkey [-F CONFIG] [-p PORT] [USER@]HOST' >&2
+    exit 64
+}
+
+config_opt=
+port_opt=
+while getopts F:p: opt; do
+    case $opt in
+        F) config_opt=$OPTARG ;;
+        p) port_opt=$OPTARG ;;
+        *) usage ;;
+    esac
+done
+shift $((OPTIND - 1))
+[ "$#" -eq 1 ] || usage
+dest=$1
+case $dest in -*) usage ;; esac
+
+# ssh rejects empty -F and -p values, so pass each only when given.
+set -- "$dest"
+[ -z "$port_opt" ] || set -- -p "$port_opt" "$@"
+[ -z "$config_opt" ] || set -- -F "$config_opt" "$@"
+
+config=$(ssh -G "$@" </dev/null 2>/dev/null) || {
+    echo "sandbox-ssh-hostkey: cannot resolve '$dest' with the SSH configuration." >&2
+    exit 1
+}
+known_files=$(printf '%s\n' "$config" | awk '$1 == "userknownhostsfile" { $1 = ""; print; exit }')
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+fetched=$tmp/known_hosts
+
+# Expected to fail at authentication, after the host key is recorded.
+ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    -o UserKnownHostsFile="$fetched" -o GlobalKnownHostsFile=/dev/null \
+    -o HashKnownHosts=no -o UpdateHostKeys=no -o CheckHostIP=no \
+    -o PubkeyAuthentication=no -o PasswordAuthentication=no \
+    -o KbdInteractiveAuthentication=no -o HostbasedAuthentication=no \
+    -o GSSAPIAuthentication=no -o IdentityAgent=none -o IdentitiesOnly=yes \
+    -o ForwardAgent=no -o ForwardX11=no -o ClearAllForwardings=yes \
+    -o ConnectTimeout=15 -T "$@" true </dev/null >/dev/null 2>"$tmp/error" || :
+
+line=$(grep -v '^#' "$fetched" 2>/dev/null | head -n 1) || :
+if [ -z "$line" ]; then
+    echo "sandbox-ssh-hostkey: no host key received from $dest:" >&2
+    sed 's/^/  /' "$tmp/error" >&2
+    exit 1
+fi
+# The name ssh looks the host up by ([host]:port off port 22, or its
+# HostKeyAlias), then "type key".
+name=${line%% *}
+key=${line#* }
+type=${key%% *}
+fingerprint=$(ssh-keygen -l -f "$fetched" | head -n 1)
+
+# Entries already listed for this host, from every user known_hosts file
+# (ssh -G prints them with ~ expanded).
+listed=
+set -f
+for file in $known_files; do
+    [ -s "$file" ] || continue
+    listed="$listed$(ssh-keygen -F "$name" -f "$file" 2>/dev/null | grep -v '^#' || :)
+"
+done
+if printf '%s' "$listed" | grep -Fq " $key"; then
+    echo "$name is already listed with this key ($fingerprint)."
+    exit 0
+fi
+if printf '%s' "$listed" | grep -Fq " $type "; then
+    cat >&2 <<EOF
+WARNING: the $type host key of $name differs from the one in known_hosts.
+The server's key changed, or the connection is being intercepted. Do not
+replace the listed key until the server's administrator confirms the new one:
+  $fingerprint
+EOF
+    exit 2
+fi
+
+cat <<EOF
+$name is not in known_hosts. Its host key:
+  $fingerprint
+Check that fingerprint with the server's administrator or console, then add
+this line to .sandbox/ssh/known_hosts in the project on the host:
+
+$line
+EOF
