@@ -1,36 +1,6 @@
 #!/bin/sh
 set -eu
 
-# Load each plugin listed by the development plugin repository's marketplace
-# straight from its clone, so edits there take effect without reinstalling.
-# The repository is the one stored with sandbox-dev-plugins.
-repository=$(sed -n '1p' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sandbox/dev-plugin-repo" 2>/dev/null || :)
-if printf '%s\n' "$repository" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$'; then
-    clone_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/dev-plugins/$repository"
-    marketplace="$clone_dir/.claude-plugin/marketplace.json"
-    sources=
-    if [ -f "$marketplace" ] &&
-        ! sources=$(jq -r '.plugins[]?.source | strings' "$marketplace"); then
-        echo "Unable to read $marketplace; development plugins were not loaded." >&2
-        sources=
-    fi
-    while IFS= read -r source; do
-        if [ -z "$source" ]; then
-            continue
-        elif ! printf '%s\n' "$source" | grep -Eq '^\./[A-Za-z0-9._/-]+$' ||
-            printf '%s\n' "/$source/" | grep -Fq '/../'; then
-            echo "Skipping unsupported plugin source: $source" >&2
-        elif [ ! -d "$clone_dir/$source" ]; then
-            echo "Skipping missing plugin directory: $source" >&2
-        else
-            # Prepend, so the agent's own arguments stay last.
-            set -- --plugin-dir "$clone_dir/${source#./}" "$@"
-        fi
-    done <<EOF
-$sources
-EOF
-fi
-
 # Sessions (SANDBOX_SESSION=1) get the sandbox's guide and rules, from the
 # image, on every launch.
 if [ "${SANDBOX_SESSION:-}" = 1 ]; then

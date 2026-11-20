@@ -6,6 +6,8 @@ project at a time. A project needs only Docker with Compose and a `.sandbox/`
 folder; it does not need this repository. Sessions start without routine
 command-approval prompts (Codex with `-a never`, Claude Code with
 `--dangerously-skip-permissions`), because the container is the boundary.
+Codex also runs plugin and configured hooks without its per-hook trust review
+(`--dangerously-bypass-hook-trust`), as Claude Code does.
 
 A session is `docker compose --env-file .sandbox/env run --rm claude` (or
 `codex`) from the project root. `.sandbox/env` points `COMPOSE_FILE` at the
@@ -647,45 +649,15 @@ Each image has a plugin manifest, [`codex/plugins.txt`](codex/plugins.txt) and
 [`claude/plugins.txt`](claude/plugins.txt). On the first start after a
 manifest changes, the agent installs each plugin through its marketplace
 command and records the manifest's checksum in the state volume; later starts
-do no plugin work. Codex installs plugins only once it is signed in. Claude's
-manifest also names GitHub-hosted marketplaces (`marketplace owner/repo`),
+do no plugin work. Codex installs plugins only once it is signed in. Both
+manifests can name GitHub-hosted marketplaces (`marketplace owner/repo`),
 cloned through the GitHub entries. Plugins that need the npm registry cannot
 install. Claude's GitHub plugin requires `GITHUB_PERSONAL_ACCESS_TOKEN` in
 `.sandbox/agent.env` and connects to `api.githubcopilot.com`, which the base
 policy allows over HTTPS. Claude also includes Ponytail from
-`DietrichGebert/ponytail`.
+`DietrichGebert/ponytail`, and both agents include the user's own plugins
+from `bryanwieg/ai-coding-plugins`.
 `check-sandbox` rejects malformed entries.
-
-## Development plugin repository
-
-Claude Code can load plugins from a GitHub repository you are developing. Name
-it once, for every project:
-
-```sh
-sandbox claude sandbox-dev-plugins set owner/repository
-sandbox claude sandbox-dev-plugins show
-sandbox claude sandbox-dev-plugins unset
-```
-
-The repository must be a Claude Code marketplace whose
-`.claude-plugin/marketplace.json` lists plugins with local sources such as
-`"source": "./plugins/<name>"`.
-
-- **Sync.** Each Claude start keeps a Git clone at
-  `$CLAUDE_CONFIG_DIR/dev-plugins/<owner>/<repository>` in the state volume,
-  fast-forwarded only when it is clean and behind. Local changes, unpushed
-  commits and diverged history are reported and kept. A failed clone or fetch
-  warns and never stops the start.
-- **Load.** The agent launcher passes `--plugin-dir` for each listed plugin,
-  so Claude reads the clone directly. Remote, out-of-repository and missing
-  sources are skipped with a warning.
-- **Use and edit.** The session rules tell Claude to prefer these skills when
-  a request matches them, and allow editing and committing in the clone on
-  request; `/reload-skills` or `/reload-plugins` applies the changes. Pushing
-  needs an explicit request.
-
-All projects share the one clone, and `unset` leaves it in place, so push work
-you want to keep before resetting the state volume.
 
 ## Tools in the images
 

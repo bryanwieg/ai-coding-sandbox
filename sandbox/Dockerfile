@@ -256,7 +256,6 @@ COPY --chmod=0755 claude/agent /usr/local/libexec/sandbox/agent
 COPY --chmod=0755 claude/auth /usr/local/libexec/sandbox/auth
 COPY --chmod=0755 claude/init.d/ /usr/local/libexec/sandbox/init.d/
 COPY claude/plugins.txt /usr/local/share/claude/plugins.txt
-COPY --chmod=0755 claude/sandbox-dev-plugins /usr/local/bin/sandbox-dev-plugins
 
 # The home is read-only; VS Code Dev Containers attach installs its server
 # through these links into the project's cache volume (init.d/06-vscode).

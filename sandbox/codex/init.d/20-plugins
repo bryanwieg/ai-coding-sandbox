@@ -1,4 +1,7 @@
 #!/bin/sh
+# Install the plugins declared in the image's manifest once Codex is signed in.
+# Marketplaces are cloned from GitHub through the egress proxy; the manifest
+# checksum is recorded only after every entry succeeds.
 set -eu
 
 plugin_manifest=/usr/local/share/codex/plugins.txt
@@ -22,20 +25,31 @@ if [ ! -f "$state_dir/auth.json" ]; then
 fi
 
 failed=false
-while IFS= read -r plugin; do
-    case "$plugin" in
+while IFS= read -r entry; do
+    case "$entry" in
         ''|'#'*) continue ;;
+        'marketplace '*)
+            source=${entry#marketplace }
+            if ! printf '%s\n' "$source" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'; then
+                echo "Invalid Codex marketplace: $source" >&2
+                exit 1
+            fi
+            if ! codex plugin marketplace add "$source" >/dev/null; then
+                echo "Unable to add Codex marketplace: $source" >&2
+                failed=true
+            fi
+            ;;
+        *)
+            if ! printf '%s\n' "$entry" | grep -Eq '^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$'; then
+                echo "Invalid Codex plugin selector: $entry" >&2
+                exit 1
+            fi
+            if ! codex plugin add "$entry"; then
+                echo "Unable to install Codex plugin: $entry" >&2
+                failed=true
+            fi
+            ;;
     esac
-
-    if ! printf '%s\n' "$plugin" | grep -Eq '^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$'; then
-        echo "Invalid Codex plugin selector: $plugin" >&2
-        exit 1
-    fi
-
-    if ! codex plugin add "$plugin"; then
-        echo "Unable to install Codex plugin: $plugin" >&2
-        failed=true
-    fi
 done < "$plugin_manifest"
 
 if [ "$failed" = false ]; then

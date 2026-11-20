@@ -54,7 +54,7 @@ jobs:
           sandbox/bin/check-sandbox
           sh sandbox/tests/test-policy.sh
           sh sandbox/tests/test-audit-session.sh
-          sh sandbox/tests/test-claude-dev-plugins.sh
+          sh sandbox/tests/test-plugin-sync.sh
           sh sandbox/tests/test-context7-check.sh
           [ -x /usr/sbin/sshd ] || sudo apt-get install -y -qq --no-install-recommends openssh-server
           sh sandbox/tests/test-ssh-hostkey.sh

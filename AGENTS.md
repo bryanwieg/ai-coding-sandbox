@@ -3,7 +3,7 @@
 Every sandbox session gets the sandbox's guide and rules from its image
 (`sandbox/image/session-guide.md` and `sandbox/image/session-rules.md`). The
 rules govern all work in a session: the security boundary, network and data
-handling, GitHub, SSH, safe operation and development plugins. This file adds the rules for developing this repository.
+handling, GitHub, SSH, safe operation and user plugins. This file adds the rules for developing this repository.
 Projects below `src/` are independent repositories with their own
 instructions; the development rules here do not apply to them.
 

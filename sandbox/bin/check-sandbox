@@ -181,17 +181,17 @@ render_session -f "$session_file" | jq -e '
 
 "$root_dir/image/sandbox-policy" check base "$root_dir/squid/base-policy.yaml"
 
-# Plugin manifests hold only selectors (and, for Claude, GitHub marketplaces).
+# Plugin manifests hold only selectors and GitHub marketplaces.
 selector='[A-Za-z0-9._-]+@[A-Za-z0-9._-]+'
-if grep -EHnv "^($selector|#.*|)\$" "$root_dir/codex/plugins.txt" >&2 ||
-    grep -EHnv "^($selector|marketplace [A-Za-z0-9._-]+/[A-Za-z0-9._-]+|#.*|)\$" "$root_dir/claude/plugins.txt" >&2; then
+if grep -EHnv "^($selector|marketplace [A-Za-z0-9._-]+/[A-Za-z0-9._-]+|#.*|)\$" \
+    "$root_dir/codex/plugins.txt" "$root_dir/claude/plugins.txt" >&2; then
     echo 'Invalid plugin manifest entry.' >&2
     exit 1
 fi
 
 grep -Fxq 'http_access deny all' "$root_dir/squid/squid.conf"
 for script in "$root_dir"/../install.sh "$root_dir"/bin/* "$root_dir"/image/sandbox-* "$root_dir"/image/init.d/* \
-    "$root_dir"/claude/agent "$root_dir"/claude/auth "$root_dir"/claude/sandbox-dev-plugins "$root_dir"/claude/init.d/* \
+    "$root_dir"/claude/agent "$root_dir"/claude/auth "$root_dir"/claude/init.d/* \
     "$root_dir"/codex/agent "$root_dir"/codex/auth "$root_dir"/codex/init.d/*; do
     sh -n "$script"
 done
