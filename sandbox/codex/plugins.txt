@@ -1,8 +1,8 @@
 # Codex plugins, synchronized on the next signed-in sandbox launch after a change.
 #   marketplace <owner>/<repository>   add a GitHub-hosted marketplace
 #   <plugin>@<marketplace>             install a plugin from it
-github@openai-curated
-codex-security@openai-curated
+github@openai-curated-remote
+codex-security@openai-curated-remote
 mattpocock-skills@openai-curated-remote
 engineering-suite-ponytail@openai-curated-remote
 marketplace bryanwieg/ai-coding-plugins
