@@ -27,6 +27,7 @@ stopping=false
 trap 'stopping=true; kill -TERM "$squid" 2>/dev/null || :' TERM INT
 
 if [ "${SANDBOX_LIFECYCLE:-}" = 1 ]; then
+    trap 'exit 1' USR1
     status=0
     ready=/tmp/sandbox-lifecycle-ready
     sandbox-lifecycle serve "$$" "$ready" &
@@ -39,8 +40,8 @@ if [ "${SANDBOX_LIFECYCLE:-}" = 1 ]; then
     if [ ! -f "$ready" ]; then
         echo 'sandbox-proxy: project lifecycle is unavailable; retry after the services stop.' >&2
         kill -TERM "$squid" 2>/dev/null || :
-        wait "$squid" || :
-        exit 1
+        stopping=true
+        status=1
     fi
     while [ "$stopping" = false ] &&
         kill -0 "$squid" 2>/dev/null && kill -0 "$lifecycle" 2>/dev/null; do
@@ -51,6 +52,7 @@ if [ "${SANDBOX_LIFECYCLE:-}" = 1 ]; then
         kill -TERM "$squid" 2>/dev/null || :
         status=1
     fi
+    sandbox-lifecycle deadline "$$" 5 &
     while kill -0 "$squid" 2>/dev/null; do
         wait "$squid" || :
     done

@@ -6,8 +6,10 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -214,4 +216,37 @@ func TestObserverWaitsForOwnerDuringShutdown(t *testing.T) {
 		t.Fatal("observer stayed alive after owner finished")
 	}
 	assertStopped(t, b)
+}
+
+func TestShutdownDeadlineSignalsOwnerThatIgnoresTerm(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	owner := exec.CommandContext(ctx, "sh", "-c", `
+		trap '' TERM
+		trap 'exit 17' USR1
+		printf r
+		while :; do sleep 0.1 & wait; done
+	`)
+	ready, err := owner.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { owner.Wait() })
+	var marker [1]byte
+	if _, err := io.ReadFull(ready, marker[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := enforceDeadline(ctx, owner.Process, 20*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	var exit *exec.ExitError
+	if err := owner.Wait(); !errors.As(err, &exit) || exit.ExitCode() != 17 {
+		t.Fatalf("owner did not exit through its shutdown deadline trap: %v", err)
+	}
 }

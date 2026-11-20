@@ -273,9 +273,21 @@ func join(ctx context.Context, path, ready string, observer bool, stopOwner func
 	return fmt.Errorf("unexpected lifecycle broker message")
 }
 
+func enforceDeadline(ctx context.Context, owner *os.Process, grace time.Duration) error {
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-timer.C:
+		fmt.Fprintln(os.Stderr, "sandbox-lifecycle: shutdown deadline exceeded")
+		return owner.Signal(syscall.SIGUSR1)
+	}
+}
+
 func run() error {
 	if len(os.Args) != 4 {
-		return fmt.Errorf("usage: sandbox-lifecycle serve|hold|observe OWNER_PID READY_FILE")
+		return fmt.Errorf("usage: sandbox-lifecycle serve|hold|observe OWNER_PID READY_FILE, or deadline OWNER_PID SECONDS")
 	}
 	mode, ready := os.Args[1], os.Args[3]
 	pid, err := strconv.Atoi(os.Args[2])
@@ -320,6 +332,12 @@ func run() error {
 		return join(ctx, agentSocket, ready, false, stopOwner)
 	case "observe":
 		return join(ctx, observerSocket, ready, true, stopOwner)
+	case "deadline":
+		seconds, err := strconv.Atoi(ready)
+		if err != nil || seconds < 1 || seconds > 25 {
+			return fmt.Errorf("invalid shutdown deadline %q", ready)
+		}
+		return enforceDeadline(ctx, owner, time.Duration(seconds)*time.Second)
 	default:
 		return fmt.Errorf("unknown lifecycle mode %q", mode)
 	}

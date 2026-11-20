@@ -56,11 +56,22 @@ plan=$(slots)
 [ -n "$plan" ] || exit 0
 
 pids=
-# shellcheck disable=SC2086 # pids is a list of process IDs.
-trap 'if [ -n "$pids" ]; then kill $pids 2>/dev/null || :; for pid in $pids; do wait "$pid" || :; done; fi' EXIT
+cleanup() {
+    [ -n "$pids" ] || return 0
+    if [ "${SANDBOX_LIFECYCLE:-}" = 1 ]; then
+        sandbox-lifecycle deadline "$$" 5 &
+    fi
+    # shellcheck disable=SC2086 # pids is a list of process IDs.
+    kill $pids 2>/dev/null || :
+    for pid in $pids; do
+        wait "$pid" || :
+    done
+}
+trap cleanup EXIT
 trap 'exit 0' TERM INT
 
 if [ "${SANDBOX_LIFECYCLE:-}" = 1 ]; then
+    trap 'trap - EXIT; exit 1' USR1
     ready=/tmp/sandbox-lifecycle-ready
     sandbox-lifecycle observe "$$" "$ready" &
     lifecycle=$!

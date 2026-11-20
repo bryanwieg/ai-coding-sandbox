@@ -28,7 +28,8 @@ The proxy, Docker daemon, forwarder and SSH agent are shared by the sessions
 in a Compose project. After the last agent container exits, the proxy waits
 two seconds for another agent to join and then starts shutdown. The sidecars
 finish their own cleanup before the proxy exits, with a 25-second limit on
-the wait. If no session joins a new proxy, it starts shutdown after two
+the wait. A service exits with an error if its own cleanup deadline expires.
+If no session joins a new proxy, it starts shutdown after two
 minutes to cover startup and standalone SSH unlock.
 
 If a session starts while the previous group is shutting down, its startup
@@ -536,6 +537,9 @@ proxy traffic cannot extend the lifetime of a session group.
 With ephemeral data, the daemon gives running containers 2 seconds to stop
 (`SANDBOX_DOCKER_STOP_TIMEOUT`) instead of Docker's 15. Its images,
 containers, volumes, build cache, logins and certificates are then gone.
+The daemon wrapper has 22 seconds to stop and finish cleanup before it
+exits with an error. The next launch clears any remaining ephemeral data
+before starting the daemon.
 To keep the images, containers, volumes and build cache, see
 [Keeping Docker data](#keeping-docker-data).
 

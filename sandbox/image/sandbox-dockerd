@@ -92,16 +92,16 @@ if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
     set -- --host=unix:///run/docker.sock "$@"
 fi
 
-wipe
-if [ "${SANDBOX_LIFECYCLE:-}" != 1 ]; then
-    start_proxy_hold
-fi
-dockerd-entrypoint.sh "$@" &
-daemon=$!
-stopping=false
-trap 'stopping=true; kill -TERM "$daemon" 2>/dev/null || :' TERM INT
+start_daemon() {
+    dockerd-entrypoint.sh "$@" &
+    daemon=$!
+}
 
 if [ "${SANDBOX_LIFECYCLE:-}" = 1 ]; then
+    daemon=
+    stopping=false
+    trap 'stopping=true; [ -z "$daemon" ] || kill -TERM "$daemon" 2>/dev/null || :' TERM INT
+    trap 'exit 1' USR1
     status=0
     ready=/tmp/sandbox-lifecycle-ready
     sandbox-lifecycle observe "$$" "$ready" &
@@ -113,8 +113,18 @@ if [ "${SANDBOX_LIFECYCLE:-}" = 1 ]; then
     done
     if [ ! -f "$ready" ]; then
         echo 'sandbox-dockerd: project lifecycle is unavailable; retry after the services stop.' >&2
+        exit 1
+    fi
+    [ "$stopping" = false ] || exit 0
+    # Register before clearing the data root so shutdown can interrupt startup.
+    wipe &
+    startup_status=0
+    wait "$!" || startup_status=$?
+    [ "$stopping" = false ] || exit 0
+    [ "$startup_status" -eq 0 ] || exit "$startup_status"
+    start_daemon "$@"
+    if [ "$stopping" = true ]; then
         kill -TERM "$daemon" 2>/dev/null || :
-        status=1
     fi
     while [ "$stopping" = false ] &&
         kill -0 "$daemon" 2>/dev/null && kill -0 "$lifecycle" 2>/dev/null; do
@@ -125,12 +135,21 @@ if [ "${SANDBOX_LIFECYCLE:-}" = 1 ]; then
         kill -TERM "$daemon" 2>/dev/null || :
         status=1
     fi
+    sandbox-lifecycle deadline "$$" 22 &
     while kill -0 "$daemon" 2>/dev/null; do
         wait "$daemon" || :
     done
-    wipe
+    # Waiting on a background child allows the shutdown deadline to interrupt cleanup.
+    trap '' TERM INT
+    wipe &
+    wait "$!"
     exit "$status"
 fi
+
+wipe
+start_proxy_hold
+start_daemon "$@"
+trap 'kill -TERM "$daemon" 2>/dev/null || :' TERM INT
 
 # Connections accepted so far (PassiveOpens in this network namespace), so a
 # session shorter than one check still counts as activity.
