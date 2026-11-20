@@ -6,6 +6,8 @@ project at a time. A project needs only Docker with Compose and a `.sandbox/`
 folder; it does not need this repository. Sessions start without routine
 command-approval prompts (Codex with `-a never`, Claude Code with
 `--dangerously-skip-permissions`), because the container is the boundary.
+Codex also runs plugin and configured hooks without its per-hook trust review
+(`--dangerously-bypass-hook-trust`), as Claude Code does.
 
 A session is `docker compose --env-file .sandbox/env run --rm claude` (or
 `codex`) from the project root. `.sandbox/env` points `COMPOSE_FILE` at the

@@ -82,7 +82,7 @@ if jq -j . "$test_dir/value" > "$test_dir/decoded" 2>/dev/null && cmp -s "$test_
 else
     fail 'the Codex value does not decode to the rules file'
 fi
-if [ "$(launch codex | tr '\n' ' ')" = '-a never --sandbox danger-full-access ' ]; then
+if [ "$(launch codex | tr '\n' ' ')" = '-a never --sandbox danger-full-access --dangerously-bypass-hook-trust ' ]; then
     pass 'Codex outside a session launches without the rules'
 else
     fail 'Codex outside a session got changed arguments'
@@ -112,15 +112,26 @@ texts = ["".join(part.get("text", "") for part in item.get("content", []))
          for item in body.get("input", []) if item.get("role") == "developer"]
 sys.exit(0 if any(rules in text for text in texts) else 1)
 PYEOF
+# A SessionStart hook in the Codex home that nobody has trusted. The launcher
+# skips hook trust review, so its context must reach the model.
+cat > "$test_dir/hook.sh" <<'SHEOF'
+echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"SANDBOX-HOOK-RAN"}}'
+SHEOF
+cat > "$test_dir/hooks.json" <<'JSONEOF'
+{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"sh /tmp/codex-home/hook.sh"}]}]}}
+JSONEOF
 # codex_request [docker run options...]: runs one exec turn against the mock
 # and exits 0 when its first request carries the rules as developer input, 1
-# when it does not, and 2 when no request arrived.
+# when it does not, 2 when no request arrived, and 3 when the untrusted hook
+# did not run.
 codex_request() {
     # shellcheck disable=SC2016
     docker run --rm --network none --read-only --tmpfs /tmp:mode=1777 --user "$(id -u):$(id -g)" \
         -v "$test_dir/mock.py:/test/mock.py:ro" -v "$test_dir/developer-has-rules.py:/test/check.py:ro" \
+        -v "$test_dir/hooks.json:/test/hooks.json:ro" -v "$test_dir/hook.sh:/test/hook.sh:ro" \
         -e CODEX_HOME=/tmp/codex-home -e MOCK_KEY=unused "$@" --entrypoint sh ai-coding-sandbox-codex:test -c '
         mkdir -p /tmp/codex-home
+        cp /test/hooks.json /test/hook.sh /tmp/codex-home/
         python3 /test/mock.py &
         sleep 1
         timeout 60 /usr/local/libexec/sandbox/agent exec --skip-git-repo-check \
@@ -128,12 +139,18 @@ codex_request() {
             -c "model_providers.mock={name=\"mock\",base_url=\"http://127.0.0.1:8765/v1\",wire_api=\"responses\",env_key=\"MOCK_KEY\",request_max_retries=0,stream_max_retries=0}" \
             hello >/dev/null 2>&1
         test -s /tmp/requests.jsonl || exit 2
+        grep -q SANDBOX-HOOK-RAN /tmp/requests.jsonl || exit 3
         python3 /test/check.py '"$rules"
 }
-if codex_request -e SANDBOX_SESSION=1; then
+status=0
+codex_request -e SANDBOX_SESSION=1 || status=$?
+if [ "$status" -eq 0 ]; then
     pass 'Codex sends the guide and rules to the model as developer input'
+    pass 'Codex runs untrusted hooks without review'
+elif [ "$status" -eq 3 ]; then
+    fail 'Codex did not run an untrusted hook'
 else
-    fail 'Codex did not send the guide and rules to the model'
+    fail "Codex did not send the guide and rules to the model (status $status)"
 fi
 status=0
 codex_request || status=$?

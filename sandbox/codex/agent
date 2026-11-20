@@ -5,4 +5,6 @@ set -eu
 if [ "${SANDBOX_SESSION:-}" = 1 ]; then
     set -- -c "developer_instructions=$(jq -Rs . /usr/local/share/sandbox/session-instructions.md)" "$@"
 fi
-exec codex -a never --sandbox danger-full-access "$@"
+# Hooks from installed plugins and configuration run without Codex's per-hook
+# trust review, like Claude's, since the container is the boundary.
+exec codex -a never --sandbox danger-full-access --dangerously-bypass-hook-trust "$@"
