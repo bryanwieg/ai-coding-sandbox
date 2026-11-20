@@ -4,21 +4,20 @@ set -eu
 runtime_uid=$(id -u)
 runtime_gid=$(id -g)
 user_name=agent
-# SANDBOX_AGENT names the launched agent; sessions always set it. Its plugins
-# use XDG config in its state volume, since the rest of HOME is read-only.
+# SANDBOX_AGENT names the launched agent; sessions always set it. Both
+# agents share one XDG config folder, in Claude's state volume where it has
+# always been, since the rest of HOME is read-only: plugin settings (such as
+# Ponytail's config.json and Band ledgers) and tool config (go env, Composer,
+# Git, pip, Ruff) are the same whichever agent runs. An explicit
+# XDG_CONFIG_HOME is kept.
 case "${SANDBOX_AGENT:-}" in
-    codex) state_dir=${CODEX_HOME:-$HOME/.codex} ;;
-    claude) state_dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude} ;;
-    '') state_dir= ;;
+    claude|codex)
+        XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/xdg}
+        export XDG_CONFIG_HOME
+        ;;
+    '') ;;
     *) echo "Unsupported sandbox agent: $SANDBOX_AGENT" >&2; exit 1 ;;
 esac
-# SANDBOX_XDG_AUTO tells the CLI wrappers (sandbox-agent-cli) that the
-# folder is the default, so the other agent, run from this one, uses its own.
-if [ -n "$state_dir" ] && [ -z "${XDG_CONFIG_HOME:-}" ]; then
-    XDG_CONFIG_HOME=$state_dir/xdg
-    SANDBOX_XDG_AUTO=1
-    export XDG_CONFIG_HOME SANDBOX_XDG_AUTO
-fi
 identity_dir=$(mktemp -d "/tmp/$user_name-identity.XXXXXX")
 
 # NSS records supply names; numeric process credentials and permissions stay unchanged.
