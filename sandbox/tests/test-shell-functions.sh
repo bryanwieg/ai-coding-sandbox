@@ -95,6 +95,9 @@ case "$*" in
         exit 0
         ;;
 esac
+if [ "${SANDBOX_TEST_HERDR:-}" = 1 ] && [ "${HERDR_AGENT+x}" = x ]; then
+    printf 'HERDR_AGENT=%s\n' "$HERDR_AGENT"
+fi
 for argument in "$@"; do printf '%s\n' "$argument"; done
 case "$*" in
     *' trust --yes'|*' --rm trust') [ "${SANDBOX_TEST_FAIL:-}" != trust ] || exit 42 ;;
@@ -143,6 +146,10 @@ for shell in bash zsh; do
     [ "$(run "$test_dir/project" sandbox | tr '\n' ' ')" = "${trust}${launch}claude " ]
     [ "$(run "$test_dir/project" 'sandbox claude bash' | tr '\n' ' ')" = "${trust}${launch}claude bash " ]
     [ "$(run "$test_dir/project" 'sandbox codex --help' | tr '\n' ' ')" = "${trust}${launch}codex --help " ]
+    [ "$(run "$test_dir/project" 'unset HERDR_AGENT; SANDBOX_TEST_HERDR=1 sandbox' | tr '\n' ' ')" = "${trust}HERDR_AGENT=claude ${launch}claude " ]
+    [ "$(run "$test_dir/project" 'unset HERDR_AGENT; SANDBOX_TEST_HERDR=1 sandbox codex' | tr '\n' ' ')" = "${trust}HERDR_AGENT=codex ${launch}codex " ]
+    [ "$(run "$test_dir/project" 'HERDR_AGENT=claude SANDBOX_TEST_HERDR=1 sandbox codex' | tr '\n' ' ')" = "HERDR_AGENT=claude ${trust}HERDR_AGENT=claude ${launch}codex " ]
+    [ "$(run "$test_dir/project" 'unset HERDR_AGENT; SANDBOX_TEST_HERDR=1 sandbox claude bash' | tr '\n' ' ')" = "${trust}${launch}claude bash " ]
     [ "$(run "$test_dir/project" 'SANDBOX_TEST_SSH=1 sandbox codex' | tr '\n' ' ')" = "${trust}${unlock}${launch}codex " ]
     [ "$(run "$test_dir/project" 'SANDBOX_TEST_APPLIED=abc SANDBOX_TEST_WANTED=abc sandbox' | tr '\n' ' ')" = "${trust}${launch}claude " ]
     [ "$(run "$test_dir/project" 'SANDBOX_TEST_APPLIED= SANDBOX_TEST_WANTED= sandbox' | tr '\n' ' ')" = "${trust}${launch}claude " ]
