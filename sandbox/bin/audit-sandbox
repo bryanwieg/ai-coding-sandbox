@@ -141,7 +141,7 @@ for agent in claude codex; do
         done && echo home-read-only
         test ! -e /tmp/audit-previous-session && echo tmp-reset
         test -f "$state/audit-state" && echo state-persists
-        test "$XDG_CONFIG_HOME" = "$state/xdg" &&
+        test "$XDG_CONFIG_HOME" = "$CLAUDE_CONFIG_DIR/xdg" &&
             grep -Fxq audit,task "$XDG_CONFIG_HOME/ponytail/band/audit.csv" && echo plugin-config-persists
         test ! -e /var/run/docker.sock && test ! -e /run/docker.sock && echo no-host-socket
         # /tmp is noexec; go test runs its binary from GOTMPDIR in the

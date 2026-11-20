@@ -4,6 +4,9 @@
 github@openai-curated-remote
 codex-security@openai-curated-remote
 mattpocock-skills@openai-curated-remote
-engineering-suite-ponytail@openai-curated-remote
+# Ponytail's own Codex plugin, with its lifecycle hooks; the curated
+# engineering-suite-ponytail is a skills-only repackaging.
+marketplace DietrichGebert/ponytail
+ponytail@ponytail
 marketplace bryanwieg/ai-coding-plugins
 phased-delivery@ai-coding-plugins

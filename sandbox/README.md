@@ -286,11 +286,11 @@ either agent can run the other with its sign-in (for example, Claude handing
 a build stage to `codex exec`). Each session can therefore read both agents'
 credentials. `SANDBOX_AGENT` names the agent the session starts;
 `GH_CONFIG_DIR` is that agent's state volume's `gh` folder.
-`XDG_CONFIG_HOME` defaults to each agent's own state volume's `xdg` folder, so
-plugin settings and Ponytail Band ledgers persist with a read-only home: the
-entrypoint sets it for the started agent, and wrappers ahead of the CLIs on
-`PATH` (`image/sandbox-agent-cli`) switch it when one agent runs the other.
-An explicit `XDG_CONFIG_HOME` is preserved. The home is `/home/agent`;
+`XDG_CONFIG_HOME` defaults to one folder both agents share, `~/.claude/xdg`
+in Claude's state volume, so plugin settings, Ponytail Band ledgers and tool
+config (`go env`, Composer, Git, pip, Ruff) persist with a read-only home and
+are the same whichever agent runs, including a Codex build that Claude
+started. An explicit `XDG_CONFIG_HOME` is preserved. The home is `/home/agent`;
 `/home/claude` and `/home/codex`, the homes of the former per-agent images,
 link to it, so paths saved in existing state still resolve.
 
@@ -674,9 +674,9 @@ manifests can name GitHub-hosted marketplaces (`marketplace owner/repo`),
 cloned through the GitHub entries. Plugins that need the npm registry cannot
 install. Claude's GitHub plugin requires `GITHUB_PERSONAL_ACCESS_TOKEN` in
 `.sandbox/agent.env` and connects to `api.githubcopilot.com`, which the base
-policy allows over HTTPS. Claude also includes Ponytail from
-`DietrichGebert/ponytail`, and both agents include the user's own plugins
-from `bryanwieg/ai-coding-plugins`.
+policy allows over HTTPS. Both agents include Ponytail from its own
+marketplace, `DietrichGebert/ponytail`, with its lifecycle hooks, and the
+user's own plugins from `bryanwieg/ai-coding-plugins`.
 `check-sandbox` rejects malformed entries.
 
 ## Tools in the image

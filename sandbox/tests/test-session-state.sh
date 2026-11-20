@@ -190,7 +190,8 @@ else
 fi
 
 # Plugins such as Ponytail write below XDG_CONFIG_HOME even when HOME is
-# read-only. Exercise both agents and command overrides through the entrypoint.
+# read-only. Both agents share Claude's state folder for it. Exercise both
+# agents and command overrides through the entrypoint.
 for agent in claude codex; do
     # shellcheck disable=SC2016
     if docker run --rm --network none --read-only --cap-drop ALL \
@@ -199,7 +200,7 @@ for agent in claude codex; do
         -e SANDBOX_AGENT="$agent" -e HOME=/home/agent \
         -e CLAUDE_CONFIG_DIR=/state/claude -e CODEX_HOME=/state/codex \
         "$image" sh -ceu '
-            test "$XDG_CONFIG_HOME" = "/state/$SANDBOX_AGENT/xdg"
+            test "$XDG_CONFIG_HOME" = /state/claude/xdg
             mkdir -p "$XDG_CONFIG_HOME/ponytail/band"
             printf "key,name\ntest,task\n" > "$XDG_CONFIG_HOME/ponytail/band/test.csv"
             test -s "$XDG_CONFIG_HOME/ponytail/band/test.csv"

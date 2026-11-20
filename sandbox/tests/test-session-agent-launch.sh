@@ -3,7 +3,7 @@
 # their arguments: sessions (SANDBOX_SESSION=1) receive the sandbox guide and
 # rules, and the image run on its own launches the agent without them.
 # sandbox-start sets up both agents and runs the launcher SANDBOX_AGENT names;
-# the CLI wrappers give each agent its own plugin config folder. The real
+# both agents share one plugin config folder, also when one runs the other. The real
 # Codex CLI is also checked to send the rules to a mock model server.
 set -eu
 
@@ -87,9 +87,9 @@ for agent in claude codex; do
         fail "sandbox-start for $agent: $calls"
     fi
 done
-# Through the entrypoint, each CLI gets its own state's xdg folder, also when
-# the other agent runs it; an explicit XDG_CONFIG_HOME is kept. Stub CLIs
-# stand in for the real ones under /opt and print the folder.
+# Through the entrypoint, both CLIs get the shared xdg folder in Claude's
+# state, also when the other agent runs them; an explicit XDG_CONFIG_HOME is
+# kept. Stub CLIs stand in for the real ones under /opt and print the folder.
 for agent in claude codex; do
     mkdir -p "$test_dir/opt-$agent/node_modules/.bin"
     # shellcheck disable=SC2016
@@ -105,9 +105,9 @@ xdg() {
         -e SANDBOX_AGENT="$started" -e CLAUDE_CONFIG_DIR=/s/claude -e CODEX_HOME=/s/codex \
         "$@" "$image" "$cli"
 }
-if [ "$(xdg claude claude)" = /s/claude/xdg ] && [ "$(xdg claude codex)" = /s/codex/xdg ] &&
-    [ "$(xdg codex codex)" = /s/codex/xdg ] && [ "$(xdg codex claude)" = /s/claude/xdg ]; then
-    pass 'each agent uses its own plugin config folder, also when run by the other'
+if [ "$(xdg claude claude)" = /s/claude/xdg ] && [ "$(xdg claude codex)" = /s/claude/xdg ] &&
+    [ "$(xdg codex codex)" = /s/claude/xdg ] && [ "$(xdg codex claude)" = /s/claude/xdg ]; then
+    pass 'both agents share one plugin config folder, also when one runs the other'
 else
     fail "plugin config folders: $(xdg claude codex) $(xdg codex claude)"
 fi
