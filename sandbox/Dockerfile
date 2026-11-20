@@ -205,6 +205,7 @@ RUN chmod 0755 /usr/local/bin/sandbox-entrypoint /usr/local/bin/sandbox-start /u
     && chmod 0644 /etc/ssh/ssh_config.d/90-ssh-proxy.conf /etc/gitconfig \
     && mkdir -p /usr/local/libexec/sandbox/init.d /usr/local/share/sandbox
 COPY --chmod=0755 image/init.d/ /usr/local/libexec/sandbox/init.d/
+COPY --chmod=0755 image/exit.d/ /usr/local/libexec/sandbox/exit.d/
 # The guide and rules every session's agent loads, combined into the one file
 # the launchers pass; the base egress policy is there for reference.
 COPY --chmod=0644 image/session-guide.md image/session-rules.md squid/base-policy.yaml \

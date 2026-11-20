@@ -1,10 +1,11 @@
 #!/bin/sh
 # Default command of the agent image: run the shared initialization, then the
 # launched agent's (SANDBOX_AGENT), then the other agent's, each in name
-# order, and hand off to the launched agent's launcher. The other agent is set
-# up too because the launched one may run it; its scripts stay quiet and skip
-# plugin synchronization until it is signed in. Command overrides (a shell,
-# an auth command) bypass this script entirely.
+# order; run the launched agent's launcher; and once it exits, run the exit
+# hooks in name order and exit with the agent's status. The other agent is
+# set up too because the launched one may run it; its scripts stay quiet and
+# skip plugin synchronization until it is signed in. Command overrides (a
+# shell, an auth command) bypass this script entirely.
 set -eu
 
 libexec_dir=/usr/local/libexec/sandbox
@@ -15,9 +16,45 @@ case "$agent" in
     *) echo 'Set SANDBOX_AGENT to claude or codex.' >&2; exit 2 ;;
 esac
 
+# Exit hooks find what changed during the session by comparing with this
+# file's time; /tmp belongs to this container alone.
+SANDBOX_SESSION_STARTED=${TMPDIR:-/tmp}/sandbox-session-started
+: > "$SANDBOX_SESSION_STARTED"
+export SANDBOX_SESSION_STARTED
+
 for script in "$libexec_dir"/init.d/* "$libexec_dir/$agent"/init.d/* "$libexec_dir/$other"/init.d/*; do
-    [ -x "$script" ] || continue
+    [ -f "$script" ] && [ -x "$script" ] || continue
     "$script"
 done
 
-exec "$libexec_dir/$agent/agent" "$@"
+# The agent runs as a background child so that this script can forward a
+# stop or hangup to it while waiting. A non-interactive shell gives
+# background children /dev/null as input and ignores SIGINT and SIGQUIT in
+# them; pass the terminal through and restore both signals' defaults.
+SANDBOX_EXIT_REASON=normal
+exec 3<&0
+env --default-signal=INT,QUIT "$libexec_dir/$agent/agent" "$@" 0<&3 3<&- &
+agent_pid=$!
+exec 3<&-
+trap 'SANDBOX_EXIT_REASON=stop; kill -TERM "$agent_pid" 2>/dev/null || :' TERM
+trap 'SANDBOX_EXIT_REASON=hangup; kill -HUP "$agent_pid" 2>/dev/null || :' HUP
+# Ctrl-C belongs to the agent; it must not end this script.
+trap : INT QUIT
+
+# A trapped signal interrupts wait; wait again until the agent is gone.
+while :; do
+    status=0
+    wait "$agent_pid" || status=$?
+    kill -0 "$agent_pid" 2>/dev/null || break
+done
+
+# Exit hooks are best effort: their failures never change the agent's status.
+# A stop leaves too little time before the container is killed to run them.
+export SANDBOX_EXIT_REASON
+if [ "$SANDBOX_EXIT_REASON" != stop ]; then
+    for script in "$libexec_dir"/exit.d/*; do
+        [ -f "$script" ] && [ -x "$script" ] || continue
+        "$script" || :
+    done
+fi
+exit "$status"

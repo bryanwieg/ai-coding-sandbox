@@ -141,36 +141,60 @@ fi
 
 scratch=$project/.ai-scratchpad
 check 'the scratchpad is created silently' 0 '' 07-scratchpad
-if [ "$(cat "$scratch/.gitignore")" = '*' ]; then
-    pass 'the scratchpad ignores itself in Git'
+if [ "$(cat "$scratch/.gitignore")" = '*' ] && [ "$(wc -l < "$scratch/.session-days")" -eq 1 ]; then
+    pass 'the scratchpad ignores itself in Git and records the session day'
 else
-    fail 'the scratchpad has no self-ignoring .gitignore'
+    fail 'the scratchpad lacks its .gitignore or session day'
 fi
+check 'a second session on the same day records no new day' 0 '' 07-scratchpad
+if [ "$(wc -l < "$scratch/.session-days")" -eq 1 ]; then
+    pass 'one line per session day'
+else
+    fail "session days: $(cat "$scratch/.session-days")"
+fi
+# A project left alone for years with few session days keeps its notes.
+printf '2020-01-01\n2020-06-01\n' > "$scratch/.session-days"
+: > "$scratch/ancient"
+touch -d '2019-01-01' "$scratch/ancient"
+check 'few session days keep old entries' 0 '' 07-scratchpad
+if [ -e "$scratch/ancient" ]; then
+    pass 'time away from the project does not age its notes'
+else
+    fail 'an entry was removed by calendar age alone'
+fi
+# Thirteen earlier session days plus today: the oldest, 2020-01-01, is the cutoff.
+: > "$scratch/.session-days"
+for day in 01 02 03 04 05 06 07 08 09 10 11 12 13; do
+    printf '2020-01-%s\n' "$day" >> "$scratch/.session-days"
+done
 mkdir -p "$scratch/old-dir"
-: > "$scratch/old"
 : > "$scratch/old-dir/note"
-: > "$scratch/fresh"
-touch -d '30 days ago' "$scratch/old" "$scratch/old-dir/note" "$scratch/.gitignore"
+: > "$scratch/recent"
+touch -d '2019-12-01' "$scratch/ancient" "$scratch/old-dir/note" "$scratch/.gitignore"
+touch -d '2020-01-05' "$scratch/recent"
 check 'the image outside a session leaves the scratchpad alone' 0 '' 07-scratchpad -e SANDBOX_SESSION=
 check 'cleanup off keeps old entries' 0 '' 07-scratchpad -e SANDBOX_SCRATCHPAD_DAYS=off
-if [ -e "$scratch/old" ]; then pass 'old entries survive with cleanup off'; else fail 'cleanup off removed entries'; fi
-check 'an invalid age warns and keeps old entries' 0 'must be a number of days' 07-scratchpad \
+if [ -e "$scratch/ancient" ]; then pass 'old entries survive with cleanup off'; else fail 'cleanup off removed entries'; fi
+sed -i '$d' "$scratch/.session-days"
+check 'an invalid age warns and keeps old entries' 0 'must be a number of session days' 07-scratchpad \
     -e SANDBOX_SCRATCHPAD_DAYS=soon
-if [ -e "$scratch/old" ]; then pass 'old entries survive an invalid age'; else fail 'an invalid age removed entries'; fi
+if [ -e "$scratch/ancient" ]; then pass 'old entries survive an invalid age'; else fail 'an invalid age removed entries'; fi
+sed -i '$d' "$scratch/.session-days"
 check 'the scratchpad is cleaned silently' 0 '' 07-scratchpad
-if [ ! -e "$scratch/old" ] && [ ! -e "$scratch/old-dir" ] && [ -e "$scratch/fresh" ] && [ -e "$scratch/.gitignore" ]; then
-    pass 'old entries and emptied folders go; fresh entries and .gitignore stay'
+if [ ! -e "$scratch/ancient" ] && [ ! -e "$scratch/old-dir" ] && [ -e "$scratch/recent" ] &&
+    [ -e "$scratch/.gitignore" ] && [ "$(wc -l < "$scratch/.session-days")" -eq 14 ]; then
+    pass 'entries untouched for 14 session days go; newer entries and bookkeeping stay'
 else
     fail "unexpected scratchpad contents: $(cd "$scratch" && find . | sort | tr '\n' ' ')"
 fi
 rm -r "$scratch"
 mkdir "$test_dir/outside"
 : > "$test_dir/outside/keep"
-touch -d '30 days ago' "$test_dir/outside/keep"
+touch -d '2019-01-01' "$test_dir/outside/keep"
 ln -s "$test_dir/outside" "$scratch"
 check 'a linked scratchpad warns and is left alone' 0 'not a plain folder' 07-scratchpad
-if [ -e "$test_dir/outside/keep" ]; then
-    pass 'nothing behind a linked scratchpad is removed'
+if [ -e "$test_dir/outside/keep" ] && [ ! -e "$test_dir/outside/.session-days" ]; then
+    pass 'nothing behind a linked scratchpad is touched'
 else
     fail 'cleanup followed the scratchpad link'
 fi

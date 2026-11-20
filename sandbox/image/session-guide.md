@@ -60,11 +60,11 @@ session ends.
   `/cache` is writable and allows executables. Everything else outside the
   agents' state volumes is read-only, including the home directory.
 - `.ai-scratchpad/` in the project is the agents' own working folder for
-  notes, plans, logs and scratch files that should outlast `/tmp`. Each
-  session start creates it with a `.gitignore` that keeps it out of Git, and
-  deletes entries untouched for `SANDBOX_SCRATCHPAD_DAYS` days (default 14;
-  `off` keeps them). Anything in it may disappear, so keep nothing there
-  that belongs in the project.
+  notes, plans, logs and scratch files that should outlast `/tmp`; it keeps
+  itself out of Git. At a normal exit, when it changed, the agent is run once
+  more to tidy it; each start deletes entries untouched for the project's last
+  `SANDBOX_SCRATCHPAD_DAYS` session days (default 14). Exit also deletes local
+  branches already merged, rebased or squashed into the default branch.
 - `XDG_CONFIG_HOME` defaults to `~/.claude/xdg`, shared by both agents, so
   plugins and tools can persist settings and task ledgers while the rest of
   the home is read-only. An explicit `XDG_CONFIG_HOME` is preserved.
@@ -112,7 +112,8 @@ is useful only when `ssh` is on and keys are unlocked.
 
 Environment variables and secrets for both agents and the commands they run,
 such as `CONTEXT7_API_KEY` (an optional key for Context7's rate limits) or
-`SANDBOX_SCRATCHPAD_DAYS` (how long `.ai-scratchpad/` keeps entries), as
+the session cleanup settings `SANDBOX_SCRATCHPAD_DAYS`, `SANDBOX_EXIT_CLEANUP`
+and `SANDBOX_EXIT_CURATE`, as
 literal `NAME=value` lines (no quotes, no `export`). Mode `0600`
 and ignored by Git. Use the variables it provides; do not read the file
 itself.
@@ -349,7 +350,11 @@ Defaults for any project; the project's own instructions override them.
 - Keep behavior unchanged unless asked, and do not add single-use helpers or
   new files without a reason.
 - Keep personal notes, plans and logs in `.ai-scratchpad/`, not in `/tmp`
-  or the project's tracked files, and never commit them.
+  or the project's tracked files, and never commit them. Start each note
+  with its date and topic, and delete it once its work is done.
+- Notes, memories and docs may be out of date: check them against the code
+  before relying on them. When you change behavior, update or remove what
+  describes it, replacing outdated text rather than appending to it.
 - Work on a branch, not the default branch, and commit in logical steps. A
   pull request may hold several commits, and some plugins rely on them;
   whether to squash is decided per pull request. Pushing and opening pull

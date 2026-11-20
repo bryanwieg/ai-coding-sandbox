@@ -35,6 +35,7 @@ jobs:
           sh sandbox/tests/test-session-init.sh
           sh sandbox/tests/test-session-state.sh
           sh sandbox/tests/test-session-agent-launch.sh
+          sh sandbox/tests/test-session-exit.sh
           sh sandbox/tests/test-powershell.sh ai-coding-sandbox-agent:test
           sh sandbox/tests/test-go.sh ai-coding-sandbox-agent:test
           sh sandbox/tests/test-shell.sh ai-coding-sandbox-agent:test
