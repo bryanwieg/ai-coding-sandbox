@@ -98,7 +98,15 @@ HELP
             ;;
     esac
     local sandbox_status=0
-    docker compose --env-file .sandbox/env run --rm "$@" || sandbox_status=$?
+    case "$#:$1" in
+        1:claude|1:codex)
+            # Herdr sees the host-side Docker process for a containerized agent.
+            HERDR_AGENT="${HERDR_AGENT-$1}" docker compose --env-file .sandbox/env run --rm "$@" || sandbox_status=$?
+            ;;
+        *)
+            docker compose --env-file .sandbox/env run --rm "$@" || sandbox_status=$?
+            ;;
+    esac
     case "$1" in
         claude|codex) sandbox-prune ;;
     esac
