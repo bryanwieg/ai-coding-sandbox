@@ -141,7 +141,9 @@ for agent in claude codex; do
         go_project=$(mktemp -d) && cd "$go_project" && go mod init audit.test/probe >/dev/null 2>&1 &&
             printf "package probe\n\nimport \"testing\"\n\nfunc TestCache(t *testing.T) {}\n" > probe_test.go &&
             go test . >/dev/null && test "$(go env GOTMPDIR)" = /cache/go/tmp && cd - >/dev/null && echo go-cache-volume
-        http_code=$(curl -sS --max-time 20 -o /dev/null -w "%{http_code}" https://api.github.com/zen)
+        # github.com, not the API, whose unauthenticated rate limit on shared
+        # CI addresses answers 403 even though the proxy allowed the request.
+        http_code=$(curl -sS --max-time 20 -o /dev/null -w "%{http_code}" https://github.com/robots.txt)
         if [ "$http_code" = 200 ]; then
             echo allowlisted-https
         else
