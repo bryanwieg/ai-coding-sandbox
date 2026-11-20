@@ -73,7 +73,7 @@ case "$*" in
     'inspect --format {{.Image}} c1') printf 'sha256:bbb\n'; exit 0 ;;
     'image ls --no-trunc --digests '*' ghcr.io/bryanwieg/ai-coding-sandbox')
         printf '%s\n' 'sha256:aaa <none> sha256:aaa' 'sha256:bbb <none> sha256:bbb' \
-            'sha256:ccc <none> sha256:ccc' 'sha256:ddd claude-latest sha256:ddd'
+            'sha256:ccc <none> sha256:ccc' 'sha256:ddd agent-latest sha256:ddd'
         exit 0
         ;;
     'run --rm --pull=always '*' sandbox-init-config')
@@ -195,7 +195,7 @@ for shell in bash zsh; do
     [ "$result" -eq 48 ] && [ -s "$removed" ]
     : > "$removed"
     run "$test_dir/project" "SANDBOX_TEST_IMAGES='$released' sandbox trust" >/dev/null
-    run "$test_dir/project" "SANDBOX_TEST_IMAGES='$released ai-coding-sandbox-dev:claude' sandbox-prune" >/dev/null
+    run "$test_dir/project" "SANDBOX_TEST_IMAGES='$released ai-coding-sandbox-dev:agent' sandbox-prune" >/dev/null
     run "$test_dir/empty" "SANDBOX_TEST_IMAGES='$released' sandbox-prune" >/dev/null
     [ ! -s "$removed" ]
     # Only a Git repository's root without .sandbox/env is initialized and

@@ -1,0 +1,19 @@
+#!/bin/sh
+# Installed as /usr/local/libexec/sandbox/bin/claude and .../codex, ahead of
+# the real CLIs on PATH. Either agent may run the other, so each CLI gets its
+# own state volume's xdg folder for plugin settings and ledgers rather than
+# inheriting the caller's. An XDG_CONFIG_HOME the user set explicitly (the
+# entrypoint leaves SANDBOX_XDG_AUTO unset then) is kept.
+set -eu
+
+agent=$(basename "$0")
+case "$agent" in
+    claude) state_dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude} ;;
+    codex) state_dir=${CODEX_HOME:-$HOME/.codex} ;;
+    *) echo "Unsupported agent CLI: $agent" >&2; exit 2 ;;
+esac
+if [ "${SANDBOX_XDG_AUTO:-}" = 1 ]; then
+    XDG_CONFIG_HOME=$state_dir/xdg
+    export XDG_CONFIG_HOME
+fi
+exec "/opt/$agent/node_modules/.bin/$agent" "$@"

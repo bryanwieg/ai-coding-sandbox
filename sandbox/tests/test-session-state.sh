@@ -196,10 +196,10 @@ for agent in claude codex; do
     if docker run --rm --network none --read-only --cap-drop ALL \
         --security-opt no-new-privileges:true --user "$(id -u):$(id -g)" \
         --tmpfs /tmp:mode=1777 --tmpfs "/state:uid=$(id -u),gid=$(id -g)" \
-        -e SANDBOX_USER="$agent" -e HOME="/home/$agent" \
+        -e SANDBOX_AGENT="$agent" -e HOME=/home/agent \
         -e CLAUDE_CONFIG_DIR=/state/claude -e CODEX_HOME=/state/codex \
         "$image" sh -ceu '
-            test "$XDG_CONFIG_HOME" = "/state/$SANDBOX_USER/xdg"
+            test "$XDG_CONFIG_HOME" = "/state/$SANDBOX_AGENT/xdg"
             mkdir -p "$XDG_CONFIG_HOME/ponytail/band"
             printf "key,name\ntest,task\n" > "$XDG_CONFIG_HOME/ponytail/band/test.csv"
             test -s "$XDG_CONFIG_HOME/ponytail/band/test.csv"
@@ -211,7 +211,7 @@ for agent in claude codex; do
     fi
     # shellcheck disable=SC2016
     if [ "$(docker run --rm --network none --read-only --tmpfs /tmp:mode=1777 \
-        --user "$(id -u):$(id -g)" -e SANDBOX_USER="$agent" \
+        --user "$(id -u):$(id -g)" -e SANDBOX_AGENT="$agent" -e HOME=/home/agent \
         -e XDG_CONFIG_HOME=/tmp/custom-xdg "$image" sh -c 'printf "%s" "$XDG_CONFIG_HOME"')" = /tmp/custom-xdg ]; then
         pass "$agent preserves an explicit XDG_CONFIG_HOME"
     else

@@ -14,8 +14,8 @@ mkdir -p "$check_dir/src/project"
 # has only the rootless daemon's exceptions. Only the proxy reaches the uplink,
 # the daemon alone joins its own network (internal unless direct egress is
 # chosen), only the forwarder publishes ports, key files reach only the ssh services, and agents get the
-# reference root and .sandbox read-only, with only the project and their own
-# state writable. Released images come from GHCR, never a build.
+# reference root and .sandbox read-only, with only the project and the two
+# agents' state volumes writable. Released images come from GHCR, never a build.
 session_file="$root_dir/compose.session.yaml"
 dev_file="$root_dir/compose.dev.yaml"
 render_session() (
@@ -80,8 +80,10 @@ printf '%s\n' "$rendered_session" | jq -e --arg reference "$check_dir" '
     # Compose names the cache volume per project; it is never shared.
     ((.volumes.cache.external // false) == false) and
     (.volumes.cache.name == "sandbox-check_cache") and
+    # Both agents share one image and mount both state volumes, so either
+    # can run the other; each keeps its GitHub login in its own state.
+    ($s.claude.image == $s.codex.image) and
     all(["claude", "codex"][]; . as $name | $s[$name] |
-        (.environment.CLAUDE_CONFIG_DIR // .environment.CODEX_HOME) as $state |
         ((.user | root) | not) and
         ((. | nets) == ["session-internal"]) and
         (.working_dir == "/workspace/sandbox-check") and
@@ -91,14 +93,22 @@ printf '%s\n' "$rendered_session" | jq -e --arg reference "$check_dir" '
         (.environment.SSH_AUTH_SOCK == "/run/ssh-agent/agent.sock") and
         ([ .volumes[] | select(.target == "/reference" and .source == $reference and .read_only == true) ] | length == 1) and
         ([ .volumes[] | select(.target == "/workspace/sandbox-check/.sandbox" and .read_only == true) ] | length == 1) and
+        (.environment.SANDBOX_AGENT == $name) and
+        (.environment.CLAUDE_CONFIG_DIR == "/home/agent/.claude") and
+        (.environment.CODEX_HOME == "/home/agent/.codex") and
+        (.environment.GH_CONFIG_DIR == (if $name == "claude" then "/home/agent/.claude" else "/home/agent/.codex" end) + "/gh") and
         ([ writable[] | [.type, .target] ] | sort ==
-            ([["bind", "/workspace/sandbox-check"], ["volume", $state], ["volume", "/cache"]] | sort)) and
+            ([["bind", "/workspace/sandbox-check"], ["volume", "/home/agent/.claude"],
+              ["volume", "/home/agent/.codex"], ["volume", "/cache"]] | sort)) and
+        ([ .volumes[] | select(.target | test("^/home/agent/\\.(claude|codex)$")) | .source ] | sort ==
+            ["claude-state", "codex-state"]) and
         ([ .volumes[] | select(.target == "/cache") | .source ] == ["cache"]) and
         ([ .volumes[] | select(.source == "docker-certs") | [.read_only, .volume.subpath] ] == [[true, "client"]]) and
         (.depends_on["egress-proxy"].condition == "service_healthy") and
-        (.depends_on["\($name)-state-init"].condition == "service_completed_successfully") and
+        (.depends_on["claude-state-init"].condition == "service_completed_successfully") and
+        (.depends_on["codex-state-init"].condition == "service_completed_successfully") and
         ([ $s["\($name)-state-init"].volumes[] | [.type, .source, .target] ] | sort ==
-            ([["volume", "\($name)-state", $state], ["volume", "docker-certs", "/certs"],
+            ([["volume", "\($name)-state", "/home/agent/.\($name)"], ["volume", "docker-certs", "/certs"],
               ["volume", "cache", "/cache"]] | sort)))
 ' >/dev/null
 

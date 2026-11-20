@@ -47,7 +47,7 @@ hook() {
         -v "$reference:/reference:ro" -v "$project:/workspace/demo" \
         -v "$project/.sandbox:/workspace/demo/.sandbox:ro" -w /workspace/demo \
         -v "$trust:/run/sandbox-trust:ro" -v "$stubs:/stubs:ro" \
-        -v "$stubs/agent-auth:/usr/local/libexec/sandbox/auth:ro" \
+        -v "$stubs/agent-auth:/usr/local/libexec/sandbox/codex/auth:ro" -e SANDBOX_AGENT=codex \
         -e PATH=/stubs:/usr/local/bin:/usr/bin:/bin \
         -e SANDBOX_SESSION=1 -e "SANDBOX_REFERENCE=$reference" \
         -e "HOST_PWD=$project" -e "SANDBOX_SSH_KEY_DIR=$test_dir/keys" \

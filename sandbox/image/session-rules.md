@@ -7,7 +7,8 @@ project's own instructions; where they conflict, these rules win.
 ## Workspace
 
 - The working directory is the selected project. It is the only writable
-  location besides `/tmp`, `/cache` and the agent's own state.
+  location besides `/tmp`, `/cache` and the agents' state (`~/.claude`,
+  `~/.codex`). Use the other agent's state only by running that agent.
 - The optional reference folder is read-only: other projects may be read
   for context, never modified.
 - `.sandbox/` in the project is read-only configuration owned by the user.

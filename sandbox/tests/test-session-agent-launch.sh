@@ -1,7 +1,9 @@
 #!/bin/sh
-# Both agent launchers, in their real images with stub CLIs that print their
-# arguments: sessions (SANDBOX_SESSION=1) receive the sandbox guide and rules,
-# and the image run on its own launches the agent without them. The real
+# Both agent launchers, in the real agent image with stub CLIs that print
+# their arguments: sessions (SANDBOX_SESSION=1) receive the sandbox guide and
+# rules, and the image run on its own launches the agent without them.
+# sandbox-start sets up both agents and runs the launcher SANDBOX_AGENT names;
+# the CLI wrappers give each agent its own plugin config folder. The real
 # Codex CLI is also checked to send the rules to a mock model server.
 set -eu
 
@@ -25,33 +27,101 @@ launch() {
     agent=$1
     shift
     docker run --rm --user "$(id -u):$(id -g)" -v "$test_dir/print-args:/stubs/$agent:ro" \
-        -e PATH="/stubs:/opt/agent/node_modules/.bin:/usr/local/bin:/usr/bin:/bin" \
-        "$@" --entrypoint /usr/local/libexec/sandbox/agent "ai-coding-sandbox-$agent:test"
+        -e PATH="/stubs:/usr/local/bin:/usr/bin:/bin" \
+        "$@" --entrypoint "/usr/local/libexec/sandbox/$agent/agent" "$image"
 }
 
+image=ai-coding-sandbox-agent:test
+docker build --quiet --target agent --tag "$image" "$sandbox_dir" >/dev/null
+
+if docker run --rm --user "$(id -u):$(id -g)" --entrypoint test "$image" -r "$rules"; then
+    pass "the image's runtime user can read the guide and rules"
+else
+    fail "the image's runtime user cannot read the guide and rules"
+fi
+# The loaded file is the guide followed by the rules, both whole.
+if docker run --rm --entrypoint sh "$image" -c '
+    cd /usr/local/share/sandbox
+    { cat session-guide.md; echo; cat session-rules.md; } | cmp -s - session-instructions.md &&
+        grep -q "^# Sandbox Session Guide" session-instructions.md &&
+        grep -q "^# Sandbox Session Rules" session-instructions.md &&
+        grep -q "^## The project.s .\.sandbox/. folder" session-instructions.md &&
+        test -r base-policy.yaml'; then
+    pass 'the image combines the guide and rules and carries the base policy'
+else
+    fail "the image's session instructions are not the guide and rules"
+fi
+
+# Both CLIs are installed and on PATH, so either agent can run the other.
 for agent in claude codex; do
-    docker build --quiet --target "$agent" --tag "ai-coding-sandbox-$agent:test" "$sandbox_dir" >/dev/null
+    if docker run --rm --network none --entrypoint sh "$image" -c "command -v $agent >/dev/null"; then
+        pass "the $agent CLI is on PATH"
+    else
+        fail "the $agent CLI is missing"
+    fi
 done
 
+# sandbox-start runs the shared init scripts and both agents', then the named
+# agent's launcher. The other agent, signed out, syncs no plugins, and the
+# Context7 key is checked once. Stubs record calls.
+cat > "$test_dir/record" <<'EOF'
+#!/bin/sh
+printf '%s %s\n' "$(basename "$0")" "$*" >> /tmp/calls
+EOF
+chmod 0755 "$test_dir/record"
 for agent in claude codex; do
-    if docker run --rm --user "$(id -u):$(id -g)" --entrypoint test "ai-coding-sandbox-$agent:test" -r "$rules"; then
-        pass "the $agent image's runtime user can read the guide and rules"
+    # shellcheck disable=SC2016
+    calls=$(docker run --rm --network none --read-only --tmpfs /tmp:mode=1777 --user "$(id -u):$(id -g)" \
+        -v "$test_dir/record:/stubs/claude:ro" -v "$test_dir/record:/stubs/codex:ro" \
+        -v "$test_dir/record:/stubs/sandbox-check-context7:ro" \
+        -e PATH="/stubs:/usr/local/bin:/usr/bin:/bin" -e SANDBOX_AGENT="$agent" \
+        -e CLAUDE_CONFIG_DIR=/tmp/claude -e CODEX_HOME=/tmp/codex \
+        --entrypoint sh "$image" -c 'sandbox-start --probe >/dev/null 2>&1; cat /tmp/calls; ls /tmp')
+    case "$agent" in claude) other=codex ;; codex) other=claude ;; esac
+    if printf '%s\n' "$calls" | grep -Eq "^$agent( .*)? --probe\$" &&
+        ! printf '%s\n' "$calls" | grep -q "^$other " &&
+        [ "$(printf '%s\n' "$calls" | grep -c '^sandbox-check-context7')" -eq 1 ] &&
+        printf '%s\n' "$calls" | grep -Fxq "$agent" && printf '%s\n' "$calls" | grep -Fxq "$other"; then
+        pass "sandbox-start sets up both agents and launches $agent only"
     else
-        fail "the $agent image's runtime user cannot read the guide and rules"
-    fi
-    # The loaded file is the guide followed by the rules, both whole.
-    if docker run --rm --entrypoint sh "ai-coding-sandbox-$agent:test" -c '
-        cd /usr/local/share/sandbox
-        { cat session-guide.md; echo; cat session-rules.md; } | cmp -s - session-instructions.md &&
-            grep -q "^# Sandbox Session Guide" session-instructions.md &&
-            grep -q "^# Sandbox Session Rules" session-instructions.md &&
-            grep -q "^## The project.s .\.sandbox/. folder" session-instructions.md &&
-            test -r base-policy.yaml'; then
-        pass "the $agent image combines the guide and rules and carries the base policy"
-    else
-        fail "the $agent image's session instructions are not the guide and rules"
+        fail "sandbox-start for $agent: $calls"
     fi
 done
+# Through the entrypoint, each CLI gets its own state's xdg folder, also when
+# the other agent runs it; an explicit XDG_CONFIG_HOME is kept. Stub CLIs
+# stand in for the real ones under /opt and print the folder.
+for agent in claude codex; do
+    mkdir -p "$test_dir/opt-$agent/node_modules/.bin"
+    # shellcheck disable=SC2016
+    printf '#!/bin/sh\nprintf "%%s\\n" "$XDG_CONFIG_HOME"\n' > "$test_dir/opt-$agent/node_modules/.bin/$agent"
+    chmod 0755 "$test_dir/opt-$agent/node_modules/.bin/$agent"
+done
+# xdg STARTED CLI [docker run options...]: the folder CLI sees in a session of STARTED.
+xdg() {
+    started=$1 cli=$2
+    shift 2
+    docker run --rm --network none --user "$(id -u):$(id -g)" \
+        -v "$test_dir/opt-claude:/opt/claude:ro" -v "$test_dir/opt-codex:/opt/codex:ro" \
+        -e SANDBOX_AGENT="$started" -e CLAUDE_CONFIG_DIR=/s/claude -e CODEX_HOME=/s/codex \
+        "$@" "$image" "$cli"
+}
+if [ "$(xdg claude claude)" = /s/claude/xdg ] && [ "$(xdg claude codex)" = /s/codex/xdg ] &&
+    [ "$(xdg codex codex)" = /s/codex/xdg ] && [ "$(xdg codex claude)" = /s/claude/xdg ]; then
+    pass 'each agent uses its own plugin config folder, also when run by the other'
+else
+    fail "plugin config folders: $(xdg claude codex) $(xdg codex claude)"
+fi
+if [ "$(xdg claude codex -e XDG_CONFIG_HOME=/tmp/mine)" = /tmp/mine ]; then
+    pass 'an explicit XDG_CONFIG_HOME reaches the other agent unchanged'
+else
+    fail 'an explicit XDG_CONFIG_HOME was replaced'
+fi
+
+if docker run --rm --network none "$image" >/dev/null 2>&1; then
+    fail 'sandbox-start ran without SANDBOX_AGENT'
+else
+    pass 'sandbox-start refuses to run without SANDBOX_AGENT'
+fi
 
 output=$(launch claude -e SANDBOX_SESSION=1)
 if printf '%s\n' "$output" | grep -Fxq -- --append-system-prompt-file &&
@@ -66,7 +136,7 @@ else
     fail 'Claude outside a session got changed arguments'
 fi
 
-docker run --rm --entrypoint cat ai-coding-sandbox-codex:test "$rules" > "$test_dir/rules.md"
+docker run --rm --entrypoint cat "$image" "$rules" > "$test_dir/rules.md"
 launch codex -e SANDBOX_SESSION=1 > "$test_dir/codex-args"
 # The value is the whole file as one TOML basic string, which jq writes as a
 # single-line JSON string.
@@ -129,12 +199,12 @@ codex_request() {
     docker run --rm --network none --read-only --tmpfs /tmp:mode=1777 --user "$(id -u):$(id -g)" \
         -v "$test_dir/mock.py:/test/mock.py:ro" -v "$test_dir/developer-has-rules.py:/test/check.py:ro" \
         -v "$test_dir/hooks.json:/test/hooks.json:ro" -v "$test_dir/hook.sh:/test/hook.sh:ro" \
-        -e CODEX_HOME=/tmp/codex-home -e MOCK_KEY=unused "$@" --entrypoint sh ai-coding-sandbox-codex:test -c '
+        -e CODEX_HOME=/tmp/codex-home -e MOCK_KEY=unused "$@" --entrypoint sh "$image" -c '
         mkdir -p /tmp/codex-home
         cp /test/hooks.json /test/hook.sh /tmp/codex-home/
         python3 /test/mock.py &
         sleep 1
-        timeout 60 /usr/local/libexec/sandbox/agent exec --skip-git-repo-check \
+        timeout 60 /usr/local/libexec/sandbox/codex/agent exec --skip-git-repo-check \
             -c model_provider=mock -c model=gpt-mock \
             -c "model_providers.mock={name=\"mock\",base_url=\"http://127.0.0.1:8765/v1\",wire_api=\"responses\",env_key=\"MOCK_KEY\",request_max_retries=0,stream_max_retries=0}" \
             hello >/dev/null 2>&1

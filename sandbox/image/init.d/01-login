@@ -13,7 +13,7 @@ if ! sandbox-auth status >/dev/null 2>&1; then
     if [ "$interactive" = true ]; then
         sandbox-auth login || echo 'Agent sign-in did not complete; the agent may ask again.' >&2
     else
-        echo "The agent is not signed in; run: $compose ${SANDBOX_USER:-codex} sandbox-auth login" >&2
+        echo "The agent is not signed in; run: $compose ${SANDBOX_AGENT:-codex} sandbox-auth login" >&2
     fi
 fi
 
@@ -27,6 +27,6 @@ if ! gh auth status --hostname github.com >/dev/null 2>&1; then
             gh auth login --hostname github.com --git-protocol https --web ||
             echo 'GitHub sign-in did not complete; GitHub access will fail until it does.' >&2
     else
-        echo "GitHub is not signed in; run: $compose ${SANDBOX_USER:-codex} gh auth login --hostname github.com --git-protocol https --web" >&2
+        echo "GitHub is not signed in; run: $compose ${SANDBOX_AGENT:-codex} gh auth login --hostname github.com --git-protocol https --web" >&2
     fi
 fi

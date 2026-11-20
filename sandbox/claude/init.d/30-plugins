@@ -2,6 +2,7 @@
 # Install the plugins declared in the image's manifest. Marketplaces are cloned
 # from GitHub through the egress proxy; the manifest checksum is recorded only
 # after every entry succeeds, so a failed synchronization retries next launch.
+# In Codex sessions, which may run Claude, this waits until Claude is signed in.
 set -eu
 
 plugin_manifest=/usr/local/share/claude/plugins.txt
@@ -16,6 +17,10 @@ manifest_hash=$(sha256sum "$plugin_manifest" | cut -d ' ' -f 1)
 installed_hash=$(sed -n '1p' "$installed_hash_file" 2>/dev/null || true)
 
 if [ "$manifest_hash" = "$installed_hash" ]; then
+    exit 0
+fi
+
+if [ "${SANDBOX_AGENT:-claude}" != claude ] && [ ! -f "$state_dir/.credentials.json" ]; then
     exit 0
 fi
 

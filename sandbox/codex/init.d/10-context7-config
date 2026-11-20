@@ -27,4 +27,7 @@ EOF
 
 mv "$temporary_file" "$config_file"
 
-sandbox-check-context7
+# The key check runs once per start, for the launched agent.
+if [ "${SANDBOX_AGENT:-codex}" = codex ]; then
+    sandbox-check-context7
+fi

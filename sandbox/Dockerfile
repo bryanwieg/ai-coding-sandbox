@@ -22,23 +22,25 @@ RUN cd /opt/node-tools \
     && npm install --omit=dev \
     && npm cache clean --force
 
+# Each CLI installs in its own stage and layer from its own pinned manifest,
+# so an update to one reuses the other's install.
 FROM node-runtime AS claude-cli
-COPY claude/package.json /opt/agent/package.json
-ARG AGENT_VERSION=
-RUN cd /opt/agent \
-    && if [ -n "$AGENT_VERSION" ]; then \
-        npm install --omit=dev "@anthropic-ai/claude-code@${AGENT_VERSION}"; \
+COPY claude/package.json /opt/claude/package.json
+ARG CLAUDE_VERSION=
+RUN cd /opt/claude \
+    && if [ -n "$CLAUDE_VERSION" ]; then \
+        npm install --omit=dev "@anthropic-ai/claude-code@${CLAUDE_VERSION}"; \
     else \
         npm install --omit=dev; \
     fi \
     && npm cache clean --force
 
 FROM node-runtime AS codex-cli
-COPY codex/package.json /opt/agent/package.json
-ARG AGENT_VERSION=
-RUN cd /opt/agent \
-    && if [ -n "$AGENT_VERSION" ]; then \
-        npm install --omit=dev "@openai/codex@${AGENT_VERSION}"; \
+COPY codex/package.json /opt/codex/package.json
+ARG CODEX_VERSION=
+RUN cd /opt/codex \
+    && if [ -n "$CODEX_VERSION" ]; then \
+        npm install --omit=dev "@openai/codex@${CODEX_VERSION}"; \
     else \
         npm install --omit=dev; \
     fi \
@@ -181,13 +183,12 @@ RUN ln -s /usr/local/libexec/sandbox/pwsh /usr/local/bin/pwsh
 ENV POWERSHELL_TELEMETRY_OPTOUT=1 \
     POWERSHELL_UPDATECHECK=Off
 
-# Shared start contract: the entrypoint supplies the runtime identity for every
-# command; the default command runs /usr/local/libexec/sandbox/init.d/* and then
-# the image's own /usr/local/libexec/sandbox/agent launcher.
-# sandbox-auth gives every image the same status|login|logout interface over
-# its own /usr/local/libexec/sandbox/auth. Each agent target installs its CLI
-# under /opt/agent and names the npm package in SANDBOX_AGENT_PACKAGE and the
-# sandbox.agent.package label, which the host launcher reads.
+# Start contract: the entrypoint supplies the runtime identity for every
+# command; the default command runs /usr/local/libexec/sandbox/init.d/*, then
+# the launched agent's own init.d/* and its launcher, both under
+# /usr/local/libexec/sandbox/<agent>/. SANDBOX_AGENT (claude or codex), set by
+# each Compose service, names the launched agent. sandbox-auth gives both
+# agents the same status|login|logout interface over their own auth scripts.
 COPY image/sandbox-entrypoint image/sandbox-start image/sandbox-auth \
     image/sandbox-agent-version image/sandbox-initialize-state \
     image/sandbox-check-context7 image/sandbox-policy image/sandbox-docker-lease \
@@ -234,80 +235,67 @@ WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/sandbox-entrypoint"]
 CMD ["/usr/local/bin/sandbox-start"]
 
-# Claude Code image: ghcr.io/<repository>:claude-latest
-FROM base AS claude
+# Agent image: ghcr.io/<repository>:agent-latest. Both CLIs, so either agent
+# can hand work to the other; the claude and codex services differ only in
+# SANDBOX_AGENT and their GitHub login folder.
+FROM base AS agent
 
-COPY --from=claude-cli /opt/agent /opt/agent
+COPY --from=claude-cli /opt/claude /opt/claude
+COPY --from=codex-cli /opt/codex /opt/codex
 
 # The image is immutable; updates arrive through a rebuilt image, never in place.
 # Telemetry, error reports, and claude.ai MCP connectors are off so that Claude
-# Code needs only the API and sign-in hosts on the egress allowlist.
-LABEL sandbox.agent=claude \
-    sandbox.agent.package=@anthropic-ai/claude-code
-ENV PATH="/opt/agent/node_modules/.bin:${PATH}" \
-    SANDBOX_AGENT_PACKAGE=@anthropic-ai/claude-code \
+# Code needs only the API and sign-in hosts on the egress allowlist. Both state
+# volumes are mounted at these paths in every session.
+# Codex's own bubblewrap sandbox cannot start under Docker's default seccomp
+# profile, so a Codex that another agent runs as a builder (phased-delivery's
+# codex-build.sh) uses the container as its boundary too.
+# The CLIs are reached through sandbox-agent-cli, which gives each its own
+# plugin config folder when one agent runs the other.
+LABEL sandbox.agents="claude codex"
+ENV PATH="/usr/local/libexec/sandbox/bin:${PATH}" \
     DISABLE_AUTOUPDATER=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
     ENABLE_CLAUDEAI_MCP_SERVERS=false \
-    SANDBOX_USER=claude \
-    CLAUDE_CONFIG_DIR=/home/claude/.claude
+    CLAUDE_CONFIG_DIR=/home/agent/.claude \
+    CODEX_HOME=/home/agent/.codex \
+    CODEX_BUILD_SANDBOX=danger-full-access
 
-COPY --chmod=0755 claude/agent /usr/local/libexec/sandbox/agent
-COPY --chmod=0755 claude/auth /usr/local/libexec/sandbox/auth
-COPY --chmod=0755 claude/init.d/ /usr/local/libexec/sandbox/init.d/
+COPY --chmod=0755 claude/agent claude/auth /usr/local/libexec/sandbox/claude/
+COPY --chmod=0755 claude/init.d/ /usr/local/libexec/sandbox/claude/init.d/
+COPY --chmod=0755 codex/agent codex/auth /usr/local/libexec/sandbox/codex/
+COPY --chmod=0755 codex/init.d/ /usr/local/libexec/sandbox/codex/init.d/
 COPY claude/plugins.txt /usr/local/share/claude/plugins.txt
+COPY codex/plugins.txt /usr/local/share/codex/plugins.txt
+COPY --chmod=0755 image/sandbox-agent-cli /usr/local/libexec/sandbox/bin/claude
+COPY --chmod=0755 image/sandbox-agent-cli /usr/local/libexec/sandbox/bin/codex
 
 # The home is read-only; VS Code Dev Containers attach installs its server
 # through these links into the project's cache volume (init.d/06-vscode).
 # Commands run with docker exec, as attach does, skip the entrypoint's NSS
-# records, so every unused UID and GID from 500 to 65533 is named after the
-# agent with its home: attach finds the links, and OpenSSH finds ~/.ssh.
+# records, so every unused UID and GID from 500 to 65533 is named agent with
+# its home: attach finds the links, and OpenSSH finds ~/.ssh.
 # These are name lookups only; sessions replace them with the entrypoint's.
+# /home/claude and /home/codex, the homes of the former per-agent images,
+# point here, so absolute paths saved in existing state volumes (such as
+# installed plugins) still resolve.
 ARG AGENT_UID=1000
 ARG AGENT_GID=1000
-RUN groupmod --gid "${AGENT_GID}" --new-name claude node \
-    && usermod --uid "${AGENT_UID}" --login claude --home /home/claude --shell /bin/bash --move-home node \
-    && ln -s /cache/vscode/server /home/claude/.vscode-server \
-    && ln -s /cache/vscode/remote-containers /home/claude/.vscode-remote-containers \
-    && awk -F: '{ used[$3] = 1 } END { for (id = 500; id <= 65533; id++) if (!(id in used)) printf "claude:x:%d:%d::/home/claude:/bin/bash\n", id, id }' \
+RUN groupmod --gid "${AGENT_GID}" --new-name agent node \
+    && usermod --uid "${AGENT_UID}" --login agent --home /home/agent --shell /bin/bash --move-home node \
+    && ln -s /cache/vscode/server /home/agent/.vscode-server \
+    && ln -s /cache/vscode/remote-containers /home/agent/.vscode-remote-containers \
+    && ln -s /home/agent /home/claude \
+    && ln -s /home/agent /home/codex \
+    && awk -F: '{ used[$3] = 1 } END { for (id = 500; id <= 65533; id++) if (!(id in used)) printf "agent:x:%d:%d::/home/agent:/bin/bash\n", id, id }' \
         /etc/passwd >> /etc/passwd \
-    && awk -F: '{ used[$3] = 1 } END { for (id = 500; id <= 65533; id++) if (!(id in used)) printf "claude:x:%d:\n", id }' \
+    && awk -F: '{ used[$3] = 1 } END { for (id = 500; id <= 65533; id++) if (!(id in used)) printf "agent:x:%d:\n", id }' \
         /etc/group >> /etc/group
 
-ENV HOME=/home/claude
-USER claude
-
-# Codex image: ghcr.io/<repository>:codex-latest
-FROM base AS codex
-
-COPY --from=codex-cli /opt/agent /opt/agent
-
-LABEL sandbox.agent=codex \
-    sandbox.agent.package=@openai/codex
-ENV PATH="/opt/agent/node_modules/.bin:${PATH}" \
-    SANDBOX_AGENT_PACKAGE=@openai/codex \
-    SANDBOX_USER=codex
-
-COPY --chmod=0755 codex/agent /usr/local/libexec/sandbox/agent
-COPY --chmod=0755 codex/auth /usr/local/libexec/sandbox/auth
-COPY --chmod=0755 codex/init.d/ /usr/local/libexec/sandbox/init.d/
-COPY codex/plugins.txt /usr/local/share/codex/plugins.txt
-
-ARG AGENT_UID=1000
-ARG AGENT_GID=1000
-RUN groupmod --gid "${AGENT_GID}" --new-name codex node \
-    && usermod --uid "${AGENT_UID}" --login codex --home /home/codex --shell /bin/bash --move-home node \
-    && ln -s /cache/vscode/server /home/codex/.vscode-server \
-    && ln -s /cache/vscode/remote-containers /home/codex/.vscode-remote-containers \
-    && awk -F: '{ used[$3] = 1 } END { for (id = 500; id <= 65533; id++) if (!(id in used)) printf "codex:x:%d:%d::/home/codex:/bin/bash\n", id, id }' \
-        /etc/passwd >> /etc/passwd \
-    && awk -F: '{ used[$3] = 1 } END { for (id = 500; id <= 65533; id++) if (!(id in used)) printf "codex:x:%d:\n", id }' \
-        /etc/group >> /etc/group
-
-ENV HOME=/home/codex
-USER codex
+ENV HOME=/home/agent
+USER agent
 
 # Every caller names its target. Kept as the final stage so that an
 # untargeted build fails instead of silently producing an agent image.
 FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS no-target
-RUN echo 'Name an image with --target, such as claude or codex.' >&2; exit 1
+RUN echo 'Name an image with --target, such as agent.' >&2; exit 1

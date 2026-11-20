@@ -11,7 +11,7 @@ hostname=$(env SANDBOX_UID=1000 SANDBOX_GID=1000 SANDBOX_REFERENCE=/tmp \
         if . == ["sandbox"] then .[0] else error("agent hostnames must be sandbox") end')
 
 if [ "$#" -eq 0 ]; then
-    set -- ai-coding-sandbox-dev:claude ai-coding-sandbox-dev:codex
+    set -- ai-coding-sandbox-dev:agent
 fi
 
 for image do
@@ -25,7 +25,7 @@ test ! -w "$HOME"
 test "$(hostname)" = sandbox
 test "$SHELL" = /bin/bash
 test "$(getent passwd "$(id -u)" | cut -d: -f7)" = /bin/bash
-test "$(awk -F: -v user="$SANDBOX_USER" '$1 == user { print $7; exit }' /etc/passwd)" = /bin/bash
+test "$(awk -F: '$1 == "agent" { print $7; exit }' /etc/passwd)" = /bin/bash
 if command -v zsh >/dev/null; then echo 'zsh is still installed' >&2; exit 1; fi
 test ! -e /usr/local/share/oh-my-zsh
 echo 'ok   default shell is bash, zsh is absent and hostname is sandbox'

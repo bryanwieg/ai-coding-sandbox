@@ -1,12 +1,12 @@
 #!/bin/sh
-# Run against both agent images built with compose.dev.yaml, or image tags
+# Run against the agent image built with compose.dev.yaml, or image tags
 # supplied as arguments. No network access is needed: the test module has no
 # dependencies. /tmp is noexec as in a session; a tmpfs with exec stands in for
 # the project's cache volume at /cache.
 set -eu
 
 if [ "$#" -eq 0 ]; then
-    set -- ai-coding-sandbox-dev:claude ai-coding-sandbox-dev:codex
+    set -- ai-coding-sandbox-dev:agent
 fi
 
 for image do
