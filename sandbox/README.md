@@ -918,8 +918,19 @@ for the apt and apk installation
 stages, so packages such as the GitHub CLI receive updates even when no
 pinned image version changes.
 
-Merges by the auto-merge workflow do not trigger push workflows, so it
-dispatches `release.yml` itself.
+Dependabot's pull requests merge themselves once the Sandbox image workflow
+passes (`dependabot-automerge.yml`). Any other pull request merges the same
+way when it carries the `automerge` label (a merge commit, keeping its
+commits) or `automerge-squash` (one squashed commit), through
+`automerge.yml`: when the checks pass, or when the label is added after
+they passed, and only if no commit arrived since. Adding the label is the
+request to merge and release, for example
+`gh pr edit <number> --add-label automerge`. A pull request that changes
+nothing under the workflow's paths gets no checks and is never merged
+automatically.
+
+Merges by the auto-merge workflows do not trigger push workflows, so they
+dispatch `release.yml` themselves.
 Publishing uses the workflow's `GITHUB_TOKEN`; no registry secret is needed.
 GHCR creates new packages as private: make the image and Compose packages
 public once, so sessions pull without a login.

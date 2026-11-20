@@ -1,0 +1,91 @@
+name: Auto-merge
+
+# A pull request labeled automerge (a merge commit, keeping its commits) or
+# automerge-squash (one squashed commit) merges once the Sandbox image
+# workflow has passed on its head commit. Labeling is the request to merge,
+# so add a label only to a pull request that should be merged and released.
+# The check runs when that workflow completes and when a label is added
+# after it passed. A pull request outside its paths never gets that run, so
+# it is never merged here. Dependabot's pull requests have their own
+# workflow, dependabot-automerge.yml. This workflow never checks out or runs
+# pull request code.
+on:
+  workflow_run:
+    workflows: ["Sandbox image"]
+    types: [completed]
+  pull_request_target:
+    types: [labeled]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: automerge-${{ github.event.pull_request.number || github.event.workflow_run.head_branch }}
+
+jobs:
+  merge:
+    if: >-
+      (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'pull_request_target' &&
+        (github.event.label.name == 'automerge' || github.event.label.name == 'automerge-squash'))
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Merge a labeled pull request whose checks passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${PR_NUMBER:-}" ]]; then
+            echo "No pull request associated with this event"
+            exit 0
+          fi
+
+          pr="$(gh pr view "$PR_NUMBER" --json state,isDraft,headRefOid,author,labels)"
+          state="$(jq -r .state <<<"$pr")"
+          draft="$(jq -r .isDraft <<<"$pr")"
+          head="$(jq -r .headRefOid <<<"$pr")"
+          author="$(jq -r .author.login <<<"$pr")"
+          labels="$(jq -r '.labels[].name' <<<"$pr")"
+
+          if [[ "$state" != OPEN || "$draft" == true ]]; then
+            echo "PR #$PR_NUMBER is not an open, ready pull request"
+            exit 0
+          fi
+          case "$author" in
+            dependabot|dependabot\[bot\]|app/dependabot)
+              echo "Dependabot pull requests merge through dependabot-automerge.yml"
+              exit 0
+              ;;
+          esac
+          if grep -Fxq automerge-squash <<<"$labels"; then
+            method=--squash
+          elif grep -Fxq automerge <<<"$labels"; then
+            method=--merge
+          else
+            echo "PR #$PR_NUMBER has no auto-merge label"
+            exit 0
+          fi
+
+          # The latest Sandbox image run on the head commit must have passed.
+          conclusion="$(gh api \
+            "repos/$GH_REPO/actions/workflows/sandbox-image.yml/runs?event=pull_request&head_sha=$head" \
+            --jq '.workflow_runs | sort_by(.created_at) | last | .conclusion // ""')"
+          if [[ "$conclusion" != success ]]; then
+            echo "Checks on $head have not passed yet (${conclusion:-none}); waiting for them"
+            exit 0
+          fi
+
+          # --match-head-commit refuses the merge if a commit was pushed
+          # after the checks ran.
+          gh pr merge "$PR_NUMBER" "$method" --delete-branch --match-head-commit "$head"
+
+          # Merges made with GITHUB_TOKEN do not trigger push workflows, so
+          # dispatch the release, which rebuilds every image.
+          gh workflow run release.yml --ref main
