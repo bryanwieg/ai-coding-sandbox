@@ -134,7 +134,10 @@ _sandbox_update_proxy() {
     local sandbox_applied sandbox_wanted
     sandbox_applied=$(docker compose --env-file .sandbox/env exec -T egress-proxy \
         sh -c 'cat /tmp/applied-policy 2>/dev/null || echo unknown' 2>/dev/null) || return 0
-    sandbox_wanted=$(docker compose --env-file .sandbox/env run --rm -T \
+    # --pull never: the trust run just before obtained the image. Captured
+    # output has no terminal, and a dev overlay's rebuild here would fail
+    # trying to draw build progress ("failed to get console").
+    sandbox_wanted=$(docker compose --env-file .sandbox/env run --pull never --rm -T \
         --entrypoint sandbox-policy trust hash /etc/squid/project-policy.yaml) || return
     [ "$sandbox_applied" != "$sandbox_wanted" ] || return 0
     echo 'sandbox: reloading the running egress proxy with the approved policy.' >&2
