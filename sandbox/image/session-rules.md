@@ -101,13 +101,8 @@ project's own instructions; where they conflict, these rules win.
 - If a task conflicts with these rules, stop and ask for explicit approval;
   do not work around the restriction.
 
-## Development plugins
+## User plugins
 
-- When a development plugin repository is set, Claude loads the user's own
-  plugins from its clone below `$CLAUDE_CONFIG_DIR/dev-plugins/`. Their skills
-  are the user's preferred workflows: use one whenever a request matches its
-  description.
-- That clone is writable for editing and committing plugins and skills when
-  the user asks; pushing it still requires an explicit request. Edit it, never
-  an installed or cached copy, and tell the user to run `/reload-skills` (or
-  `/reload-plugins` for added or removed plugins).
+- The plugins installed from the `ai-coding-plugins` marketplace are the
+  user's own. Their skills are the user's preferred workflows: use one
+  whenever a request matches its description.

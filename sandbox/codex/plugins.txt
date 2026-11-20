@@ -1,6 +1,9 @@
-# One Codex plugin selector per line. Changes trigger synchronization on the
-# next authenticated sandbox launch.
+# Codex plugins, synchronized on the next signed-in sandbox launch after a change.
+#   marketplace <owner>/<repository>   add a GitHub-hosted marketplace
+#   <plugin>@<marketplace>             install a plugin from it
 github@openai-curated
 codex-security@openai-curated
 mattpocock-skills@openai-curated-remote
 engineering-suite-ponytail@openai-curated-remote
+marketplace bryanwieg/ai-coding-plugins
+phased-delivery@ai-coding-plugins

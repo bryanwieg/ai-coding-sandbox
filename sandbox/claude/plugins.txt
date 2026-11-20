@@ -10,3 +10,5 @@ pr-review-toolkit@claude-plugins-official
 commit-commands@claude-plugins-official
 marketplace DietrichGebert/ponytail
 ponytail@ponytail
+marketplace bryanwieg/ai-coding-plugins
+phased-delivery@ai-coding-plugins

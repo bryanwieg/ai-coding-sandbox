@@ -335,5 +335,3 @@ their machine, from the project folder:
   literal `NAME=value` entries without quotes or `export`.
 - Sign the agent in again:
   `docker compose --env-file .sandbox/env run --rm <agent> sandbox-auth login`
-- Set the development plugin repository:
-  `docker compose --env-file .sandbox/env run --rm claude sandbox-dev-plugins set owner/repository`
