@@ -1,17 +1,24 @@
 #!/bin/sh
-# Uniform agent authentication for every sandbox image:
-#   sandbox-auth status   exit 0 only when the agent is authenticated
-#   sandbox-auth login    run the agent's interactive login flow
-#   sandbox-auth logout   remove the agent's stored credentials
-# Each image implements these in /usr/local/libexec/sandbox/auth.
+# Uniform agent authentication, for either agent in the image:
+#   sandbox-auth [AGENT] status   exit 0 only when AGENT is authenticated
+#   sandbox-auth [AGENT] login    run AGENT's interactive login flow
+#   sandbox-auth [AGENT] logout   remove AGENT's stored credentials
+# AGENT is claude or codex, by default the session's own (SANDBOX_AGENT).
+# Each agent implements these in /usr/local/libexec/sandbox/AGENT/auth.
 set -eu
 
-if [ "$#" -ne 1 ]; then
-    echo 'Usage: sandbox-auth status|login|logout' >&2
+usage() {
+    echo 'Usage: sandbox-auth [claude|codex] status|login|logout' >&2
     exit 2
-fi
+}
 
-case "$1" in
-    status|login|logout) exec /usr/local/libexec/sandbox/auth "$1" ;;
-    *) echo 'Usage: sandbox-auth status|login|logout' >&2; exit 2 ;;
+case "$#" in
+    1) agent=${SANDBOX_AGENT:-}; action=$1 ;;
+    2) agent=$1; action=$2 ;;
+    *) usage ;;
+esac
+case "$agent" in claude|codex) ;; *) usage ;; esac
+case "$action" in
+    status|login|logout) exec "/usr/local/libexec/sandbox/$agent/auth" "$action" ;;
+    *) usage ;;
 esac

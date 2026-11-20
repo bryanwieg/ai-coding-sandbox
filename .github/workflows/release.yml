@@ -5,9 +5,10 @@ name: Release
 #
 # Versions: each release gets an ID from its UTC date, such as 2026.11.19,
 # with _1, _2 and so on for later releases that day; it tags the Compose
-# artifact and the commit. The agent images are versioned by their agent,
-# such as claude-2.1.327, and the others by the release ID, such as
-# proxy-2026.11.19; a rebuild of the same version appends _1, _2 and so on.
+# artifact and the commit. Every image is versioned by the release ID's date,
+# such as agent-2026.11.19 (the agent image holds both CLIs, so no single
+# agent version names it); a rebuild of the same version appends _1, _2 and
+# so on.
 # An image whose content matches its newest version (ignoring the build time
 # and the commit label) keeps that version and digest, so sessions download
 # only what changed. bin/release-tags names the versions.
@@ -72,15 +73,13 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        # version: the agent whose version names the image, or the release ID.
         include:
-          - {target: session-init, name: init, version: release}
-          - {target: claude, name: claude, version: claude}
-          - {target: codex, name: codex, version: codex}
-          - {target: session-daemon, name: docker-daemon, version: release}
-          - {target: session-proxy, name: proxy, version: release}
-          - {target: session-forwarder, name: forwarder, version: release}
-          - {target: session-ssh-agent, name: ssh-agent, version: release}
+          - {target: session-init, name: init}
+          - {target: agent, name: agent}
+          - {target: session-daemon, name: docker-daemon}
+          - {target: session-proxy, name: proxy}
+          - {target: session-forwarder, name: forwarder}
+          - {target: session-ssh-agent, name: ssh-agent}
     env:
       IMAGE: ghcr.io/${{ github.repository }}
       NAME: ${{ matrix.name }}
@@ -90,18 +89,13 @@ jobs:
       - name: Find the version
         id: base
         env:
-          VERSION_FROM: ${{ matrix.version }}
           RELEASE: ${{ needs.release-id.outputs.id }}
         run: |
           set -euo pipefail
-          case "$VERSION_FROM" in
-            claude) version=$(jq -r '.dependencies["@anthropic-ai/claude-code"]' sandbox/claude/package.json) ;;
-            codex) version=$(jq -r '.dependencies["@openai/codex"]' sandbox/codex/package.json) ;;
-            # The date alone: a later release that day adds its _N to the
-            # release ID, and release-tags adds one to the image version
-            # only when that image changed.
-            release) version=${RELEASE%%_*} ;;
-          esac
+          # The date alone: a later release that day adds its _N to the
+          # release ID, and release-tags adds one to the image version only
+          # when that image changed.
+          version=${RELEASE%%_*}
           if ! printf '%s\n' "$version" | grep -Eqx '[0-9][0-9A-Za-z.-]*'; then
             echo "Unusable version for $NAME: $version" >&2
             exit 1
@@ -142,8 +136,7 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: |
             type=gha,scope=sandbox-image-${{ matrix.name }}
-            type=gha,scope=sandbox-image-codex
-            type=gha,scope=sandbox-image-claude
+            type=gha,scope=sandbox-image-agent
           cache-to: type=gha,scope=sandbox-image-${{ matrix.name }},mode=max,ignore-error=true
 
       # Keep the newest version when the build matches it; otherwise tag the

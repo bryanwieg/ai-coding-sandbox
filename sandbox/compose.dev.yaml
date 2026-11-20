@@ -14,28 +14,28 @@ x-dev: &dev
 services:
   claude:
     <<: *dev
-    image: ai-coding-sandbox-dev:claude
-    build: {context: ., target: claude}
+    image: ai-coding-sandbox-dev:agent
+    build: {context: ., target: agent}
   claude-state-init:
     <<: *dev
-    image: ai-coding-sandbox-dev:claude
-    build: {context: ., target: claude}
+    image: ai-coding-sandbox-dev:agent
+    build: {context: ., target: agent}
   codex:
     <<: *dev
-    image: ai-coding-sandbox-dev:codex
-    build: {context: ., target: codex}
+    image: ai-coding-sandbox-dev:agent
+    build: {context: ., target: agent}
   codex-state-init:
     <<: *dev
-    image: ai-coding-sandbox-dev:codex
-    build: {context: ., target: codex}
+    image: ai-coding-sandbox-dev:agent
+    build: {context: ., target: agent}
   migrate-claude-state:
     <<: *dev
-    image: ai-coding-sandbox-dev:codex
-    build: {context: ., target: codex}
+    image: ai-coding-sandbox-dev:agent
+    build: {context: ., target: agent}
   migrate-codex-state:
     <<: *dev
-    image: ai-coding-sandbox-dev:codex
-    build: {context: ., target: codex}
+    image: ai-coding-sandbox-dev:agent
+    build: {context: ., target: agent}
   egress-proxy:
     <<: *dev
     image: ai-coding-sandbox-dev:proxy

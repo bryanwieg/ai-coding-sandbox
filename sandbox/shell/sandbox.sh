@@ -8,7 +8,7 @@
 #                                     Git repository's root without .sandbox/,
 #                                     runs sandbox-init and stages it first
 #   sandbox codex                     ... or Codex
-#   sandbox claude bash               ... or a shell in the Claude image
+#   sandbox claude bash               ... or a shell in a Claude session
 #   sandbox-trust                     review and approve the egress policy
 #   sandbox-unlock                    unlock SSH keys for SSH sessions
 #   sandbox-prune                     remove sandbox images a release replaced
@@ -29,7 +29,7 @@ the new .sandbox/ folder (env and agent.env stay ignored).
 Commands:
   sandbox                         Approve egress, unlock SSH if enabled, start Claude
   sandbox codex                   Approve egress, unlock SSH if enabled, start Codex
-  sandbox claude bash             Open a shell in the Claude image
+  sandbox claude bash             Open a shell in a Claude session
   sandbox-init [--reference PATH] [--force]
                                   Create this project's .sandbox/ configuration
     --reference PATH              Optional host folder, read-only at /reference;

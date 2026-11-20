@@ -1,14 +1,20 @@
 #!/bin/sh
-# Default command of every sandbox image: run the image's agent-specific
-# initialization in name order, then hand off to its agent launcher.
-# Command overrides (a shell, an auth command) bypass this script entirely.
+# Default command of the agent image: run the shared initialization, then the
+# launched agent's (SANDBOX_AGENT), each in name order, and hand off to that
+# agent's launcher. Command overrides (a shell, an auth command) bypass this
+# script entirely.
 set -eu
 
 libexec_dir=/usr/local/libexec/sandbox
+agent=${SANDBOX_AGENT:-}
+case "$agent" in
+    claude|codex) ;;
+    *) echo 'Set SANDBOX_AGENT to claude or codex.' >&2; exit 2 ;;
+esac
 
-for script in "$libexec_dir"/init.d/*; do
+for script in "$libexec_dir"/init.d/* "$libexec_dir/$agent"/init.d/*; do
     [ -x "$script" ] || continue
     "$script"
 done
 
-exec "$libexec_dir/agent" "$@"
+exec "$libexec_dir/$agent/agent" "$@"

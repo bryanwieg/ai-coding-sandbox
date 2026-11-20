@@ -1,10 +1,10 @@
 #!/bin/sh
-# Run against both agent images built with compose.dev.yaml, or image tags
+# Run against the agent image built with compose.dev.yaml, or image tags
 # supplied as arguments. No remote host or network access is needed.
 set -eu
 
 if [ "$#" -eq 0 ]; then
-    set -- ai-coding-sandbox-dev:claude ai-coding-sandbox-dev:codex
+    set -- ai-coding-sandbox-dev:agent
 fi
 
 for image do

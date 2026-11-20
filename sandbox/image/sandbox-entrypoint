@@ -3,23 +3,26 @@ set -eu
 
 runtime_uid=$(id -u)
 runtime_gid=$(id -g)
-# The image selects its runtime account name; Codex remains the default.
-user_name=${SANDBOX_USER:-codex}
-case "$user_name" in
-    codex) user_label=Codex; state_dir=${CODEX_HOME:-$HOME/.codex} ;;
-    claude) user_label=Claude; state_dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude} ;;
-    *) echo "Unsupported sandbox user: $user_name" >&2; exit 1 ;;
+user_name=agent
+# SANDBOX_AGENT names the launched agent; sessions always set it. Its plugins
+# use XDG config in its state volume, since the rest of HOME is read-only.
+case "${SANDBOX_AGENT:-}" in
+    codex) state_dir=${CODEX_HOME:-$HOME/.codex} ;;
+    claude) state_dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude} ;;
+    '') state_dir= ;;
+    *) echo "Unsupported sandbox agent: $SANDBOX_AGENT" >&2; exit 1 ;;
 esac
-# Plugins use XDG config even though the rest of HOME is read-only.
-XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$state_dir/xdg}
-export XDG_CONFIG_HOME
+if [ -n "$state_dir" ]; then
+    XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$state_dir/xdg}
+    export XDG_CONFIG_HOME
+fi
 identity_dir=$(mktemp -d "/tmp/$user_name-identity.XXXXXX")
 
 # NSS records supply names; numeric process credentials and permissions stay unchanged.
 (
     umask 077
     awk -F: -v uid="$runtime_uid" -v name="$user_name" '$1 != name && $3 != uid' /etc/passwd > "$identity_dir/passwd"
-    printf '%s:x:%s:%s:%s:/home/%s:/bin/bash\n' "$user_name" "$runtime_uid" "$runtime_gid" "$user_label" "$user_name" >> "$identity_dir/passwd"
+    printf '%s:x:%s:%s:Sandbox agent:/home/%s:/bin/bash\n' "$user_name" "$runtime_uid" "$runtime_gid" "$user_name" >> "$identity_dir/passwd"
     awk -F: -v gid="$runtime_gid" -v name="$user_name" '$1 != name && $3 != gid' /etc/group > "$identity_dir/group"
     printf '%s:x:%s:\n' "$user_name" "$runtime_gid" >> "$identity_dir/group"
 )

@@ -147,7 +147,7 @@ x-hardened: &hardened
 x-migrate-state: &migrate-state
   <<: *hardened
   profiles: ["tools"]
-  image: ghcr.io/bryanwieg/ai-coding-sandbox:codex-latest
+  image: ghcr.io/bryanwieg/ai-coding-sandbox:agent-latest
   entrypoint: ["/usr/local/bin/sandbox-migrate-state"]
   user: "0:0"
   cap_add:
@@ -160,27 +160,35 @@ x-migrate-state: &migrate-state
     SANDBOX_MIGRATE_MODE: "${SANDBOX_MIGRATE_MODE:-copy}"
 
 services:
+  # Both agents share one image and mount both state volumes, so either can
+  # run the other (for example, Claude handing a build to Codex) with its
+  # sign-in. SANDBOX_AGENT picks the agent the session starts; each keeps
+  # its own GitHub login in its state volume.
   claude:
     <<: *agent-service
     profiles: ["claude"]
-    image: ghcr.io/bryanwieg/ai-coding-sandbox:claude-latest
-    depends_on:
+    image: ghcr.io/bryanwieg/ai-coding-sandbox:agent-latest
+    depends_on: &agent-depends-on
       egress-proxy: {condition: service_healthy}
       docker: {condition: service_healthy, required: false}
       publish: {condition: service_started, required: false}
       ssh-agent: {condition: service_started, required: false}
       claude-state-init: {condition: service_completed_successfully}
+      codex-state-init: {condition: service_completed_successfully}
     environment:
       <<: *agent-environment
-      CLAUDE_CONFIG_DIR: /home/claude/.claude
-      GH_CONFIG_DIR: /home/claude/.claude/gh
-    volumes:
+      SANDBOX_AGENT: claude
+      CLAUDE_CONFIG_DIR: /home/agent/.claude
+      CODEX_HOME: /home/agent/.codex
+      GH_CONFIG_DIR: /home/agent/.claude/gh
+    volumes: &agent-volumes
       - *reference-mount
       - *project-mount
       - *config-mount
-      - {type: volume, source: claude-state, target: /home/claude/.claude}
+      - {type: volume, source: claude-state, target: /home/agent/.claude}
+      - {type: volume, source: codex-state, target: /home/agent/.codex}
       - *cache
-      - {type: bind, source: "${PWD}/.sandbox/ssh", target: /home/claude/.ssh, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${PWD}/.sandbox/ssh", target: /home/agent/.ssh, read_only: true, bind: {create_host_path: false}}
       - *docker-client-certs
       - *ssh-socket
       - *trust-store
@@ -188,56 +196,44 @@ services:
   codex:
     <<: *agent-service
     profiles: ["codex"]
-    image: ghcr.io/bryanwieg/ai-coding-sandbox:codex-latest
-    depends_on:
-      egress-proxy: {condition: service_healthy}
-      docker: {condition: service_healthy, required: false}
-      publish: {condition: service_started, required: false}
-      ssh-agent: {condition: service_started, required: false}
-      codex-state-init: {condition: service_completed_successfully}
+    image: ghcr.io/bryanwieg/ai-coding-sandbox:agent-latest
+    depends_on: *agent-depends-on
     environment:
       <<: *agent-environment
-      CODEX_HOME: /home/codex/.codex
-      GH_CONFIG_DIR: /home/codex/.codex/gh
-    volumes:
-      - *reference-mount
-      - *project-mount
-      - *config-mount
-      - {type: volume, source: codex-state, target: /home/codex/.codex}
-      - *cache
-      - {type: bind, source: "${PWD}/.sandbox/ssh", target: /home/codex/.ssh, read_only: true, bind: {create_host_path: false}}
-      - *docker-client-certs
-      - *ssh-socket
-      - *trust-store
+      SANDBOX_AGENT: codex
+      CLAUDE_CONFIG_DIR: /home/agent/.claude
+      CODEX_HOME: /home/agent/.codex
+      GH_CONFIG_DIR: /home/agent/.codex/gh
+    volumes: *agent-volumes
 
   # Give the shared state volume and the project's cache volume, created
   # root-owned, to the runtime user. Ownership is changed only when a volume root is not already theirs. Also
   # create the certificate folder agents mount, before the daemon ever runs.
   claude-state-init:
     <<: *state-init
-    image: ghcr.io/bryanwieg/ai-coding-sandbox:claude-latest
+    image: ghcr.io/bryanwieg/ai-coding-sandbox:agent-latest
     environment:
-      SANDBOX_STATE_DIR: /home/claude/.claude
+      SANDBOX_STATE_DIR: /home/agent/.claude
       SANDBOX_STATE_OWNER: "${SANDBOX_UID}:${SANDBOX_GID}"
       SANDBOX_STATE_CHOWN: if-needed
       SANDBOX_DOCKER_CERTS_DIR: /certs
       SANDBOX_OWNED_DIRS: /cache
     volumes:
-      - {type: volume, source: claude-state, target: /home/claude/.claude}
+      - {type: volume, source: claude-state, target: /home/agent/.claude}
       - {type: volume, source: docker-certs, target: /certs}
       - *cache
 
   codex-state-init:
     <<: *state-init
-    image: ghcr.io/bryanwieg/ai-coding-sandbox:codex-latest
+    image: ghcr.io/bryanwieg/ai-coding-sandbox:agent-latest
     environment:
-      SANDBOX_STATE_DIR: /home/codex/.codex
+      SANDBOX_STATE_DIR: /home/agent/.codex
       SANDBOX_STATE_OWNER: "${SANDBOX_UID}:${SANDBOX_GID}"
       SANDBOX_STATE_CHOWN: if-needed
       SANDBOX_DOCKER_CERTS_DIR: /certs
       SANDBOX_OWNED_DIRS: /cache
     volumes:
-      - {type: volume, source: codex-state, target: /home/codex/.codex}
+      - {type: volume, source: codex-state, target: /home/agent/.codex}
       - {type: volume, source: docker-certs, target: /certs}
       - *cache
 

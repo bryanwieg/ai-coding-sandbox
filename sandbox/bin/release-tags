@@ -1,9 +1,8 @@
 #!/bin/sh
 # Version tags for the release workflow. An image's version tag is
-# NAME-VERSION, where VERSION is the agent's own version for the agent images
-# and the release ID (a UTC date such as 2026.11.19) for the others; a later
-# release of the same VERSION appends _1, _2, and so on. Release IDs follow
-# the same scheme for the date.
+# NAME-VERSION, where VERSION is the release ID's date (a UTC date such as
+# 2026.11.19); a later release of the same VERSION appends _1, _2, and so on.
+# Release IDs follow the same scheme for the date.
 #
 #   release-tags next BASE      < tags   Prints BASE if no tag in the list is
 #                                        BASE or BASE_N, else BASE_<max N + 1>.

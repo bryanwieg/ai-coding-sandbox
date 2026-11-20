@@ -16,8 +16,8 @@ which pins every image by digest. These services make up a session:
 
 | Service | Profile | Role |
 | --- | --- | --- |
-| `claude`, `codex` | named by the run | The agent, in its own image and state volume |
-| `claude-state-init`, `codex-state-init` | always | Give the state volume to your user; create the daemon's client certificate folder |
+| `claude`, `codex` | named by the run | The agent, in the shared agent image with both agents' state volumes |
+| `claude-state-init`, `codex-state-init` | always | Give each state volume to your user; create the daemon's client certificate folder |
 | `egress-proxy` | always | The only route out: an allowlisting Squid proxy |
 | `docker` | `docker` | A rootless Docker daemon for the project |
 | `publish` | `publish` | Forwards `SANDBOX_PUBLISH_PORTS` from the host to the daemon |
@@ -240,7 +240,7 @@ docker run --rm -v ai-coding-sandbox-claude-state:/state busybox \
 ```sh
 sandbox                  # Claude Code
 sandbox codex            # Codex
-sandbox claude bash      # a shell in the Claude image, skipping agent setup
+sandbox claude bash      # a shell in a Claude session, skipping agent setup
 ```
 
 Start from the project root: bind mounts use the current folder, and a
@@ -272,7 +272,7 @@ pinned images once and reuses them.
 | The project, at `/workspace/<COMPOSE_PROJECT_NAME>` | Writable; the working directory |
 | `/reference`, when configured | Read-only |
 | `.sandbox/` in the project | Read-only |
-| `~/.claude` or `~/.codex`, the agent's state volume | Writable, shared by all projects |
+| `~/.claude` and `~/.codex`, the agents' state volumes | Writable, shared by all projects |
 | `/tmp` | Writable, emptied whenever the container starts |
 | `~/.ssh` | `.sandbox/ssh`, read-only |
 
@@ -280,15 +280,23 @@ Everything else, including the root filesystem, `/run` and the home
 directory, is read-only. The agent runs as your UID and GID, with no
 capabilities and `no-new-privileges`. The image entrypoint provides passwd and
 group entries for that UID through `libnss-wrapper`, so any UID works; use
-command overrides rather than `--entrypoint` to keep it. Each agent's state
-volume is mounted only into that agent's containers, so neither can read the
-other's credentials. `GH_CONFIG_DIR` is the state volume's `gh` folder.
-The entrypoint defaults `XDG_CONFIG_HOME` to the state volume's `xdg` folder,
+command overrides rather than `--entrypoint` to keep it. Both agents' CLIs
+are in the one agent image, and every session mounts both state volumes, so
+either agent can run the other with its sign-in (for example, Claude handing
+a build stage to `codex exec`). Each session can therefore read both agents'
+credentials. `SANDBOX_AGENT` names the agent the session starts;
+`GH_CONFIG_DIR` is that agent's state volume's `gh` folder.
+The entrypoint defaults `XDG_CONFIG_HOME` to that state volume's `xdg` folder,
 so plugin settings and Ponytail Band ledgers persist with a read-only home.
-An explicit `XDG_CONFIG_HOME` is preserved.
+An explicit `XDG_CONFIG_HOME` is preserved. The home is `/home/agent`;
+`/home/claude` and `/home/codex`, the homes of the former per-agent images,
+link to it, so paths saved in existing state still resolve.
 
 Both agents run without their own bubblewrap sandboxes, which Docker's default
-seccomp profile blocks. The container's boundary replaces them.
+seccomp profile blocks. The container's boundary replaces them. The image
+sets `CODEX_BUILD_SANDBOX=danger-full-access`, so a Codex that another agent
+runs as a builder (phased-delivery's `codex-build.sh`) does the same instead
+of failing to start its own sandbox.
 
 ## Egress policy
 
@@ -354,7 +362,7 @@ Python packages into a virtual environment in the project or `/cache`;
 packages run their own code at install and import, inside the session's
 limits, so review what an agent installs.
 `registry.npmjs.org` would let any agent install npm packages with automatic
-approval, so npm-sourced plugins cannot install. The Claude image turns off
+approval, so npm-sourced plugins cannot install. The agent image turns off Claude Code's
 the optional traffic that would need more hosts (telemetry, error reporting,
 claude.ai MCP connectors and auto-updates).
 
@@ -619,7 +627,14 @@ sandbox codex sandbox-auth logout
 sandbox claude gh auth login --hostname github.com --git-protocol https --web
 ```
 
-Credentials stay in the agent's state volume, outside every project and
+`sandbox-auth` takes an optional agent, to sign in the one a session did not
+start, such as Codex for builds handed off from Claude:
+
+```sh
+sandbox claude sandbox-auth codex login
+```
+
+Credentials stay in each agent's state volume, outside every project and
 image. The headless image has no system credential store, so the GitHub CLI
 may keep its token in plain text there.
 
@@ -645,9 +660,9 @@ the project's own `.claude/settings.json`.
 
 ## Bundled plugins
 
-Each image has a plugin manifest, [`codex/plugins.txt`](codex/plugins.txt) and
-[`claude/plugins.txt`](claude/plugins.txt). On the first start after a
-manifest changes, the agent installs each plugin through its marketplace
+Each agent has a plugin manifest, [`codex/plugins.txt`](codex/plugins.txt) and
+[`claude/plugins.txt`](claude/plugins.txt). On the first start of that agent
+after its manifest changes, it installs each plugin through its marketplace
 command and records the manifest's checksum in the state volume; later starts
 do no plugin work. Codex installs plugins only once it is signed in. Both
 manifests can name GitHub-hosted marketplaces (`marketplace owner/repo`),
@@ -659,9 +674,9 @@ policy allows over HTTPS. Claude also includes Ponytail from
 from `bryanwieg/ai-coding-plugins`.
 `check-sandbox` rejects malformed entries.
 
-## Tools in the images
+## Tools in the image
 
-Both agent images have Node.js, Python 3 with `pytest`, `pytest-timeout`, `pycodestyle`, Ruff, PyYAML,
+The agent image has Node.js, Python 3 with `pytest`, `pytest-timeout`, `pycodestyle`, Ruff, PyYAML,
 Scapy and python-on-whales, the PHP CLI with the extensions OPNsense uses, Composer, PHPUnit and
 PHP_CodeSniffer, Go with GCC for cgo, PowerShell 7 (`pwsh`), Git with Git LFS, the GitHub CLI, `jq`, ShellCheck, BSD make (`bmake`, no GNU make), `xmllint`, netcat, the OpenSSH client, and the Docker CLI with its `compose`
 and `buildx` plugins.
@@ -682,7 +697,7 @@ download through the base policy's `proxy.golang.org`; private modules that
 bypass it need their Git host (GitHub and GitLab are in the base list).
 
 The default shell is `/bin/bash` (both the login shell and `$SHELL`), and
-both agent containers use the hostname `sandbox`. Start one with
+both agent services use the hostname `sandbox`. Start one with
 `sandbox claude bash` or `sandbox codex bash`. Its history lives in `/tmp`
 (`HISTFILE`) and resets with the container.
 
@@ -701,7 +716,7 @@ absent. No WinRM or extra modules are installed. The `pwsh` wrapper sets
 `XDG_CACHE_HOME`, `XDG_DATA_HOME` and `XDG_CONFIG_HOME` under `/tmp` for
 PowerShell only, so it starts with a read-only home; this state is temporary.
 PowerShell and its required .NET runtime are copied from Microsoft's pinned
-.NET SDK image; the SDK itself is excluded from the agent images. The
+.NET SDK image; the SDK itself is excluded from the agent image. The
 PowerShell version follows that source image.
 
 ## VS Code
@@ -797,20 +812,21 @@ that project's own volumes (daemon data, certificates and the SSH socket).
 ## Images and releases
 
 The Dockerfile has a shared `base` stage with all agent-independent tooling
-and two agent targets, `codex` and `claude`, which install their CLI in their
-own layer from a pinned manifest (`codex/package.json`,
-`claude/package.json`) under `/opt/agent`, and name it in
-`SANDBOX_AGENT_PACKAGE` and the `sandbox.agent.package` label. The other
-targets are `session-daemon`, `session-proxy`, `session-forwarder` and
+and one `agent` target with both CLIs, each installed in its own stage and
+layer from its pinned manifest (`claude/package.json` under `/opt/claude`,
+`codex/package.json` under `/opt/codex`); `sandbox-agent-version claude` or
+`codex` prints either version. The other targets are `session-init`,
+`session-daemon`, `session-proxy`, `session-forwarder` and
 `session-ssh-agent`.
 
-Both agent images share one start contract. `ENTRYPOINT` is
-`sandbox-entrypoint`, which supplies the runtime user's identity and starts
-the session leases for every command. The default `CMD`, `sandbox-start`,
-runs the executable scripts in `/usr/local/libexec/sandbox/init.d/` in name
-order and then execs `/usr/local/libexec/sandbox/agent`. Each target adds its
-own `init.d` scripts and `agent` from `codex/` or `claude/`; the shared
-scripts live in `image/`. Scripts that only make sense in a session check
+`ENTRYPOINT` is `sandbox-entrypoint`, which supplies the runtime user's
+identity and starts the session leases for every command. The default `CMD`,
+`sandbox-start`, runs the executable scripts in
+`/usr/local/libexec/sandbox/init.d/` in name order, then those of the agent
+`SANDBOX_AGENT` names in `/usr/local/libexec/sandbox/<agent>/init.d/`, and
+then execs that agent's launcher, `/usr/local/libexec/sandbox/<agent>/agent`.
+Each agent's `init.d` scripts, `agent` and `auth` come from `claude/` or
+`codex/`; the shared scripts live in `image/`. Scripts that only make sense in a session check
 `SANDBOX_SESSION=1`, which the Compose file sets, so the agent image also runs on
 its own. `sandbox-init` uses a separate Alpine image containing only the
 initializer script and standard system tools.
@@ -818,19 +834,18 @@ initializer script and standard system tools.
 `release.yml` publishes every image to `ghcr.io/bryanwieg/ai-coding-sandbox` on
 a push to `main` that changes an image input (host-side scripts, tests and
 documentation do not), weekly to refresh apt and apk packages,
-and on manual runs. All seven images rebuild together, sharing BuildKit layers
+and on manual runs. All six images rebuild together, sharing BuildKit layers
 through the GitHub Actions cache.
 
 Each release gets an ID from its UTC date, such as `2026.11.19`, with `_1`,
 `_2` and so on for later releases the same day. Images are versioned as
-follows; a rebuild of a version that changed the image appends `_1`, `_2`
-and so on (`claude-2.1.327_1`), and a new agent version starts again without
-a suffix:
+follows; a rebuild the same day that changed the image appends `_1`, `_2`
+and so on (`agent-2026.11.19_1`). The agent image holds both CLIs, so no
+single agent version names it; `sandbox-agent-version` reports each:
 
 | Image | Version tag | Moving tag |
 | --- | --- | --- |
-| Claude Code | `claude-<Claude Code version>`, such as `claude-2.1.327` | `claude-latest` |
-| Codex | `codex-<Codex version>`, such as `codex-0.170.0` | `codex-latest` |
+| Agents (Claude Code and Codex) | `agent-<release ID>` | `agent-latest` |
 | Project initializer | `init-<release ID>` | `init-latest` |
 | Session daemon | `docker-daemon-<release ID>` | `docker-daemon-latest` |
 | Egress proxy | `proxy-<release ID>` | `proxy-latest` |
@@ -925,4 +940,4 @@ so CI runs `audit-sandbox --no-docker` and skips
 `tests/test-session-daemon.sh` and `tests/test-session-forwarder.sh`. Run
 those and the full audit locally after changing the daemon, the forwarder, the
 Docker client hook or the Compose file. Pull requests also build and
-smoke-test both agent images (`sandbox-image.yml`).
+smoke-test the agent image (`sandbox-image.yml`).

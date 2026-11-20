@@ -110,14 +110,23 @@ for agent in claude codex; do
         done
         mkdir -p "$XDG_CONFIG_HOME/ponytail/band"
         printf "key,name\naudit,task\n" > "$XDG_CONFIG_HOME/ponytail/band/audit.csv"
-        touch /tmp/audit-previous-session "${CLAUDE_CONFIG_DIR:-$CODEX_HOME}/audit-state"' 2>&1; then
+        for hook in "/usr/local/libexec/sandbox/$SANDBOX_AGENT"/init.d/*; do
+            [ ! -x "$hook" ] || "$hook" >/dev/null 2>&1 </dev/null || { echo "hook failed: $hook" >&2; exit 1; }
+        done
+        state=$CODEX_HOME; [ "$SANDBOX_AGENT" = claude ] && state=$CLAUDE_CONFIG_DIR
+        touch /tmp/audit-previous-session "$state/audit-state"' 2>&1; then
         pass "$agent: the startup hooks accept the session"
     else
         fail "$agent: a startup hook refused the session"
     fi
 
     output=$(session "$agent" '
+        state=$CODEX_HOME; [ "$SANDBOX_AGENT" = claude ] && state=$CLAUDE_CONFIG_DIR
         test "$(id -u)" = "$AUDIT_UID" && test "$(id -u)" -ne 0 && echo identity
+        # Either agent can run the other with its sign-in.
+        command -v claude >/dev/null && command -v codex >/dev/null &&
+            touch "$CLAUDE_CONFIG_DIR/.audit" "$CODEX_HOME/.audit" &&
+            rm "$CLAUDE_CONFIG_DIR/.audit" "$CODEX_HOME/.audit" && echo both-agents
         test "$(awk "/^CapEff/ {print \$2}" /proc/self/status)" = 0000000000000000 && echo no-capabilities
         test "$(awk "/^NoNewPrivs/ {print \$2}" /proc/self/status)" = 1 && echo no-new-privileges
         test "$PWD" = "$AUDIT_PROJECT" && echo working-directory
@@ -131,8 +140,8 @@ for agent in claude codex; do
             ! touch "$directory/.audit" 2>/dev/null || exit 1
         done && echo home-read-only
         test ! -e /tmp/audit-previous-session && echo tmp-reset
-        test -f "${CLAUDE_CONFIG_DIR:-$CODEX_HOME}/audit-state" && echo state-persists
-        test "$XDG_CONFIG_HOME" = "${CLAUDE_CONFIG_DIR:-$CODEX_HOME}/xdg" &&
+        test -f "$state/audit-state" && echo state-persists
+        test "$XDG_CONFIG_HOME" = "$state/xdg" &&
             grep -Fxq audit,task "$XDG_CONFIG_HOME/ponytail/band/audit.csv" && echo plugin-config-persists
         test ! -e /var/run/docker.sock && test ! -e /run/docker.sock && echo no-host-socket
         # /tmp is noexec; go test runs its binary from GOTMPDIR in the
@@ -151,7 +160,7 @@ for agent in claude codex; do
         ! curl -s -o /dev/null --max-time 10 --noproxy "*" https://api.github.com/zen && echo no-direct-route
     ' 2>&1 || :)
     output_reported=false
-    for expected in identity no-capabilities no-new-privileges working-directory agent-environment project-writable \
+    for expected in identity both-agents no-capabilities no-new-privileges working-directory agent-environment project-writable \
         reference-read-only config-read-only root-read-only home-read-only tmp-reset state-persists plugin-config-persists \
         no-host-socket go-cache-volume allowlisted-https \
         unlisted-https-refused no-direct-route; do

@@ -13,7 +13,11 @@ A session is a set of Compose services, all from the sandbox's images:
 
 - **The agent** (`claude` or `codex`): this container. It runs as the user's
   UID and GID, with a read-only root filesystem, no capabilities and
-  `no-new-privileges`, on an internal network with no route out.
+  `no-new-privileges`, on an internal network with no route out. Both CLIs,
+  `claude` and `codex`, are installed and signed in from their own state
+  volumes, so either agent can run the other non-interactively (such as
+  `codex exec` for a delegated task); `SANDBOX_AGENT` names the one this
+  session started.
 - **`egress-proxy`**: the only service with an Internet uplink. Every request
   leaves through it, and it allows only the base policy plus the project's
   approved additions.
@@ -36,7 +40,7 @@ session ends.
 
 | Volume | Mounted at | Scope and lifetime |
 | --- | --- | --- |
-| Agent state | `~/.claude` or `~/.codex` | Shared by all the user's projects; sign-ins, sessions, memory, settings, plugins, `gh` login (`GH_CONFIG_DIR`) |
+| Agent state | `~/.claude` and `~/.codex`, one volume each | Shared by all the user's projects and both agents; sign-ins, sessions, memory, settings, plugins, and the started agent's `gh` login (`GH_CONFIG_DIR`) |
 | `cache` | `/cache` | This project only, persists; Go's `GOPATH` and caches, VS Code's server, and other build caches |
 | `trust` | `/run/sandbox-trust`, read-only | Approved policy hashes, written only by `trust` on the host |
 | `docker-certs` | `/run/docker-certs`, read-only | The client certificate for the session daemon |
@@ -54,8 +58,8 @@ session ends.
   it is an empty file.
 - `/tmp` is writable, `noexec`, and emptied whenever the container starts.
   `/cache` is writable and allows executables. Everything else outside the
-  agent's own state is read-only, including the home directory.
-- `XDG_CONFIG_HOME` defaults to the state volume's `xdg` folder, so plugins
+  agents' state volumes is read-only, including the home directory.
+- `XDG_CONFIG_HOME` defaults to the started agent's state volume's `xdg` folder, so plugins
   can persist settings and task ledgers while the rest of the home is
   read-only. An explicit `XDG_CONFIG_HOME` is preserved.
 - `~/.ssh` is the project's `.sandbox/ssh`, read-only.
@@ -333,5 +337,5 @@ their machine, from the project folder:
 - Provide tokens or custom environment variables: edit `.sandbox/agent.env`
   (private, mode `0600`, ignored by Git), then start a new session. Use
   literal `NAME=value` entries without quotes or `export`.
-- Sign the agent in again:
-  `docker compose --env-file .sandbox/env run --rm <agent> sandbox-auth login`
+- Sign the agent in again, or sign in the other agent:
+  `docker compose --env-file .sandbox/env run --rm <agent> sandbox-auth [claude|codex] login`
