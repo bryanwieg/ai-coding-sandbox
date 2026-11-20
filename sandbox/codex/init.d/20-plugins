@@ -1,5 +1,6 @@
 #!/bin/sh
-# Install the plugins declared in the image's manifest once Codex is signed in.
+# Install the plugins declared in the image's manifest once Codex is signed in,
+# also in Claude sessions, which may run Codex.
 # Marketplaces are cloned from GitHub through the egress proxy; the manifest
 # checksum is recorded only after every entry succeeds.
 set -eu
@@ -20,7 +21,9 @@ if [ "$manifest_hash" = "$installed_hash" ]; then
 fi
 
 if [ ! -f "$state_dir/auth.json" ]; then
-    echo 'Codex plugins will be installed after login on the next launch.' >&2
+    if [ "${SANDBOX_AGENT:-codex}" = codex ]; then
+        echo 'Codex plugins will be installed after login on the next launch.' >&2
+    fi
     exit 0
 fi
 

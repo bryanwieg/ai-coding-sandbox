@@ -286,8 +286,10 @@ either agent can run the other with its sign-in (for example, Claude handing
 a build stage to `codex exec`). Each session can therefore read both agents'
 credentials. `SANDBOX_AGENT` names the agent the session starts;
 `GH_CONFIG_DIR` is that agent's state volume's `gh` folder.
-The entrypoint defaults `XDG_CONFIG_HOME` to that state volume's `xdg` folder,
-so plugin settings and Ponytail Band ledgers persist with a read-only home.
+`XDG_CONFIG_HOME` defaults to each agent's own state volume's `xdg` folder, so
+plugin settings and Ponytail Band ledgers persist with a read-only home: the
+entrypoint sets it for the started agent, and wrappers ahead of the CLIs on
+`PATH` (`image/sandbox-agent-cli`) switch it when one agent runs the other.
 An explicit `XDG_CONFIG_HOME` is preserved. The home is `/home/agent`;
 `/home/claude` and `/home/codex`, the homes of the former per-agent images,
 link to it, so paths saved in existing state still resolve.
@@ -661,10 +663,13 @@ the project's own `.claude/settings.json`.
 ## Bundled plugins
 
 Each agent has a plugin manifest, [`codex/plugins.txt`](codex/plugins.txt) and
-[`claude/plugins.txt`](claude/plugins.txt). On the first start of that agent
-after its manifest changes, it installs each plugin through its marketplace
+[`claude/plugins.txt`](claude/plugins.txt). Every start sets up both agents,
+the started one first, since either may run the other. On the first start
+after a manifest changes, its agent installs each plugin through its marketplace
 command and records the manifest's checksum in the state volume; later starts
-do no plugin work. Codex installs plugins only once it is signed in. Both
+do no plugin work. Codex installs plugins only once it is signed in, and
+Claude, in Codex sessions, likewise; until then the other agent's setup
+stays quiet. The Context7 key is checked once per start. Both
 manifests can name GitHub-hosted marketplaces (`marketplace owner/repo`),
 cloned through the GitHub entries. Plugins that need the npm registry cannot
 install. Claude's GitHub plugin requires `GITHUB_PERSONAL_ACCESS_TOKEN` in
@@ -823,8 +828,9 @@ layer from its pinned manifest (`claude/package.json` under `/opt/claude`,
 identity and starts the session leases for every command. The default `CMD`,
 `sandbox-start`, runs the executable scripts in
 `/usr/local/libexec/sandbox/init.d/` in name order, then those of the agent
-`SANDBOX_AGENT` names in `/usr/local/libexec/sandbox/<agent>/init.d/`, and
-then execs that agent's launcher, `/usr/local/libexec/sandbox/<agent>/agent`.
+`SANDBOX_AGENT` names in `/usr/local/libexec/sandbox/<agent>/init.d/`, then
+the other agent's, and then execs the named agent's launcher,
+`/usr/local/libexec/sandbox/<agent>/agent`.
 Each agent's `init.d` scripts, `agent` and `auth` come from `claude/` or
 `codex/`; the shared scripts live in `image/`. Scripts that only make sense in a session check
 `SANDBOX_SESSION=1`, which the Compose file sets, so the agent image also runs on

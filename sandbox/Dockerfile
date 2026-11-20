@@ -250,8 +250,10 @@ COPY --from=codex-cli /opt/codex /opt/codex
 # Codex's own bubblewrap sandbox cannot start under Docker's default seccomp
 # profile, so a Codex that another agent runs as a builder (phased-delivery's
 # codex-build.sh) uses the container as its boundary too.
+# The CLIs are reached through sandbox-agent-cli, which gives each its own
+# plugin config folder when one agent runs the other.
 LABEL sandbox.agents="claude codex"
-ENV PATH="/opt/claude/node_modules/.bin:/opt/codex/node_modules/.bin:${PATH}" \
+ENV PATH="/usr/local/libexec/sandbox/bin:${PATH}" \
     DISABLE_AUTOUPDATER=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
     ENABLE_CLAUDEAI_MCP_SERVERS=false \
@@ -265,6 +267,8 @@ COPY --chmod=0755 codex/agent codex/auth /usr/local/libexec/sandbox/codex/
 COPY --chmod=0755 codex/init.d/ /usr/local/libexec/sandbox/codex/init.d/
 COPY claude/plugins.txt /usr/local/share/claude/plugins.txt
 COPY codex/plugins.txt /usr/local/share/codex/plugins.txt
+COPY --chmod=0755 image/sandbox-agent-cli /usr/local/libexec/sandbox/bin/claude
+COPY --chmod=0755 image/sandbox-agent-cli /usr/local/libexec/sandbox/bin/codex
 
 # The home is read-only; VS Code Dev Containers attach installs its server
 # through these links into the project's cache volume (init.d/06-vscode).

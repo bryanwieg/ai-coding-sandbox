@@ -2,9 +2,9 @@
 # Both agent launchers, in the real agent image with stub CLIs that print
 # their arguments: sessions (SANDBOX_SESSION=1) receive the sandbox guide and
 # rules, and the image run on its own launches the agent without them.
-# sandbox-start runs the launcher SANDBOX_AGENT names, after that agent's own
-# init scripts only. The real Codex CLI is also checked to send the rules to
-# a mock model server.
+# sandbox-start sets up both agents and runs the launcher SANDBOX_AGENT names;
+# the CLI wrappers give each agent its own plugin config folder. The real
+# Codex CLI is also checked to send the rules to a mock model server.
 set -eu
 
 sandbox_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -61,8 +61,9 @@ for agent in claude codex; do
     fi
 done
 
-# sandbox-start runs the shared init scripts and the named agent's, then its
-# launcher; the other agent's init scripts do not run. Stubs record calls.
+# sandbox-start runs the shared init scripts and both agents', then the named
+# agent's launcher. The other agent, signed out, syncs no plugins, and the
+# Context7 key is checked once. Stubs record calls.
 cat > "$test_dir/record" <<'EOF'
 #!/bin/sh
 printf '%s %s\n' "$(basename "$0")" "$*" >> /tmp/calls
@@ -79,12 +80,43 @@ for agent in claude codex; do
     case "$agent" in claude) other=codex ;; codex) other=claude ;; esac
     if printf '%s\n' "$calls" | grep -Eq "^$agent( .*)? --probe\$" &&
         ! printf '%s\n' "$calls" | grep -q "^$other " &&
-        printf '%s\n' "$calls" | grep -Fxq "$agent" && ! printf '%s\n' "$calls" | grep -Fxq "$other"; then
-        pass "sandbox-start initializes and launches $agent only"
+        [ "$(printf '%s\n' "$calls" | grep -c '^sandbox-check-context7')" -eq 1 ] &&
+        printf '%s\n' "$calls" | grep -Fxq "$agent" && printf '%s\n' "$calls" | grep -Fxq "$other"; then
+        pass "sandbox-start sets up both agents and launches $agent only"
     else
         fail "sandbox-start for $agent: $calls"
     fi
 done
+# Through the entrypoint, each CLI gets its own state's xdg folder, also when
+# the other agent runs it; an explicit XDG_CONFIG_HOME is kept. Stub CLIs
+# stand in for the real ones under /opt and print the folder.
+for agent in claude codex; do
+    mkdir -p "$test_dir/opt-$agent/node_modules/.bin"
+    # shellcheck disable=SC2016
+    printf '#!/bin/sh\nprintf "%%s\\n" "$XDG_CONFIG_HOME"\n' > "$test_dir/opt-$agent/node_modules/.bin/$agent"
+    chmod 0755 "$test_dir/opt-$agent/node_modules/.bin/$agent"
+done
+# xdg STARTED CLI [docker run options...]: the folder CLI sees in a session of STARTED.
+xdg() {
+    started=$1 cli=$2
+    shift 2
+    docker run --rm --network none --user "$(id -u):$(id -g)" \
+        -v "$test_dir/opt-claude:/opt/claude:ro" -v "$test_dir/opt-codex:/opt/codex:ro" \
+        -e SANDBOX_AGENT="$started" -e CLAUDE_CONFIG_DIR=/s/claude -e CODEX_HOME=/s/codex \
+        "$@" "$image" "$cli"
+}
+if [ "$(xdg claude claude)" = /s/claude/xdg ] && [ "$(xdg claude codex)" = /s/codex/xdg ] &&
+    [ "$(xdg codex codex)" = /s/codex/xdg ] && [ "$(xdg codex claude)" = /s/claude/xdg ]; then
+    pass 'each agent uses its own plugin config folder, also when run by the other'
+else
+    fail "plugin config folders: $(xdg claude codex) $(xdg codex claude)"
+fi
+if [ "$(xdg claude codex -e XDG_CONFIG_HOME=/tmp/mine)" = /tmp/mine ]; then
+    pass 'an explicit XDG_CONFIG_HOME reaches the other agent unchanged'
+else
+    fail 'an explicit XDG_CONFIG_HOME was replaced'
+fi
+
 if docker run --rm --network none "$image" >/dev/null 2>&1; then
     fail 'sandbox-start ran without SANDBOX_AGENT'
 else

@@ -12,9 +12,12 @@ case "${SANDBOX_AGENT:-}" in
     '') state_dir= ;;
     *) echo "Unsupported sandbox agent: $SANDBOX_AGENT" >&2; exit 1 ;;
 esac
-if [ -n "$state_dir" ]; then
-    XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$state_dir/xdg}
-    export XDG_CONFIG_HOME
+# SANDBOX_XDG_AUTO tells the CLI wrappers (sandbox-agent-cli) that the
+# folder is the default, so the other agent, run from this one, uses its own.
+if [ -n "$state_dir" ] && [ -z "${XDG_CONFIG_HOME:-}" ]; then
+    XDG_CONFIG_HOME=$state_dir/xdg
+    SANDBOX_XDG_AUTO=1
+    export XDG_CONFIG_HOME SANDBOX_XDG_AUTO
 fi
 identity_dir=$(mktemp -d "/tmp/$user_name-identity.XXXXXX")
 

@@ -59,7 +59,8 @@ session ends.
 - `/tmp` is writable, `noexec`, and emptied whenever the container starts.
   `/cache` is writable and allows executables. Everything else outside the
   agents' state volumes is read-only, including the home directory.
-- `XDG_CONFIG_HOME` defaults to the started agent's state volume's `xdg` folder, so plugins
+- `XDG_CONFIG_HOME` defaults to each agent's own state volume's `xdg` folder
+  (also when one agent runs the other), so plugins
   can persist settings and task ledgers while the rest of the home is
   read-only. An explicit `XDG_CONFIG_HOME` is preserved.
 - `~/.ssh` is the project's `.sandbox/ssh`, read-only.

@@ -24,4 +24,7 @@ else
     echo "Unable to update $config_file; Context7 was not configured." >&2
 fi
 
-sandbox-check-context7
+# The key check runs once per start, for the launched agent.
+if [ "${SANDBOX_AGENT:-claude}" = claude ]; then
+    sandbox-check-context7
+fi

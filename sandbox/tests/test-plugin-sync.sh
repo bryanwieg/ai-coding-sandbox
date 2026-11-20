@@ -90,5 +90,35 @@ plugin add two@market' ;;
     fi
 done
 
+# In the other agent's session, each agent syncs only once it is signed in,
+# and says nothing while it waits.
+for agent in claude codex; do
+    case "$agent" in
+        claude) other=codex; credentials=.credentials.json ;;
+        codex) other=claude; credentials=auth.json ;;
+    esac
+    state=$test_dir/other-$agent
+    mkdir -p "$state"
+    case "$agent" in
+        claude) hook=$sandbox_dir/claude/init.d/30-plugins; var=CLAUDE_CONFIG_DIR ;;
+        codex) hook=$sandbox_dir/codex/init.d/20-plugins; var=CODEX_HOME ;;
+    esac
+    sed "s|/usr/local/share/$agent/plugins.txt|$manifest|" "$hook" > "$test_dir/hook"
+    : > "$calls"
+    output=$(env "$var=$state" SANDBOX_AGENT="$other" PATH="$test_dir/stubs:$PATH" sh "$test_dir/hook" 2>&1)
+    if [ ! -s "$calls" ] && [ -z "$output" ]; then
+        pass "$agent waits quietly for sign-in in a $other session"
+    else
+        fail "$agent synchronized or spoke while signed out in a $other session: $output"
+    fi
+    : > "$state/$credentials"
+    env "$var=$state" SANDBOX_AGENT="$other" PATH="$test_dir/stubs:$PATH" sh "$test_dir/hook" >/dev/null 2>&1
+    if [ -s "$calls" ] && [ -s "$state/plugins.manifest.sha256" ]; then
+        pass "$agent synchronizes in a $other session once signed in"
+    else
+        fail "$agent did not synchronize in a $other session once signed in"
+    fi
+done
+
 [ "$failures" -eq 0 ] || exit 1
 echo 'Plugin synchronization checks passed.'
