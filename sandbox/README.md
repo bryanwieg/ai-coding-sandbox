@@ -280,7 +280,7 @@ container goes:
   and merging overlapping ones. Ctrl-C skips it, and it runs only at a
   terminal.
 - Separately, each start deletes scratchpad entries untouched for the
-  project's last `SANDBOX_SCRATCHPAD_DAYS` session days (default 14). Only
+  project's last `SANDBOX_SCRATCHPAD_DAYS` session days (default 7). Only
   days with a session count, so time away from a project does not age its
   notes.
 
@@ -295,7 +295,7 @@ steps, `SANDBOX_EXIT_CURATE=off` only the tidy-up, and
 | The project, at `/workspace/<COMPOSE_PROJECT_NAME>` | Writable; the working directory |
 | `/reference`, when configured | Read-only |
 | `.sandbox/` in the project | Read-only |
-| `.ai-scratchpad/` in the project | Writable agent scratch space, ignored by Git; tidied by the agent at exit, and entries untouched for the project's last `SANDBOX_SCRATCHPAD_DAYS` session days (default 14, `off` keeps them) are deleted at start |
+| `.ai-scratchpad/` in the project | Writable agent scratch space, ignored by Git; tidied by the agent at exit, and entries untouched for the project's last `SANDBOX_SCRATCHPAD_DAYS` session days (default 7, `off` keeps them) are deleted at start |
 | `~/.claude` and `~/.codex`, the agents' state volumes | Writable, shared by all projects |
 | `/tmp` | Writable, emptied whenever the container starts |
 | `~/.ssh` | `.sandbox/ssh`, read-only |

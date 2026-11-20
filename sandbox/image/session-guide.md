@@ -63,7 +63,7 @@ session ends.
   notes, plans, logs and scratch files that should outlast `/tmp`; it keeps
   itself out of Git. At a normal exit, when it changed, the agent is run once
   more to tidy it; each start deletes entries untouched for the project's last
-  `SANDBOX_SCRATCHPAD_DAYS` session days (default 14). Exit also deletes local
+  `SANDBOX_SCRATCHPAD_DAYS` session days (default 7). Exit also deletes local
   branches already merged, rebased or squashed into the default branch.
 - `XDG_CONFIG_HOME` defaults to `~/.claude/xdg`, shared by both agents, so
   plugins and tools can persist settings and task ledgers while the rest of

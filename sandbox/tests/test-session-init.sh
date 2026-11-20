@@ -162,9 +162,9 @@ if [ -e "$scratch/ancient" ]; then
 else
     fail 'an entry was removed by calendar age alone'
 fi
-# Thirteen earlier session days plus today: the oldest, 2020-01-01, is the cutoff.
+# Six earlier session days plus today: the oldest, 2020-01-01, is the cutoff.
 : > "$scratch/.session-days"
-for day in 01 02 03 04 05 06 07 08 09 10 11 12 13; do
+for day in 01 02 03 04 05 06; do
     printf '2020-01-%s\n' "$day" >> "$scratch/.session-days"
 done
 mkdir -p "$scratch/old-dir"
@@ -182,8 +182,8 @@ if [ -e "$scratch/ancient" ]; then pass 'old entries survive an invalid age'; el
 sed -i '$d' "$scratch/.session-days"
 check 'the scratchpad is cleaned silently' 0 '' 07-scratchpad
 if [ ! -e "$scratch/ancient" ] && [ ! -e "$scratch/old-dir" ] && [ -e "$scratch/recent" ] &&
-    [ -e "$scratch/.gitignore" ] && [ "$(wc -l < "$scratch/.session-days")" -eq 14 ]; then
-    pass 'entries untouched for 14 session days go; newer entries and bookkeeping stay'
+    [ -e "$scratch/.gitignore" ] && [ "$(wc -l < "$scratch/.session-days")" -eq 7 ]; then
+    pass 'entries untouched for 7 session days go; newer entries and bookkeeping stay'
 else
     fail "unexpected scratchpad contents: $(cd "$scratch" && find . | sort | tr '\n' ' ')"
 fi

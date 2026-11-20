@@ -3,7 +3,7 @@
 # files across sessions. Create it, keep it out of Git with its own
 # .gitignore (the project's .gitignore and .git stay untouched), and delete
 # entries untouched for the project's last SANDBOX_SCRATCHPAD_DAYS session
-# days (default 14; "off" keeps everything). Age counts only days on which a
+# days (default 7; "off" keeps everything). Age counts only days on which a
 # session started, recorded in .session-days, so time away from the project
 # does not age its notes. Only sessions do this.
 set -eu
@@ -12,7 +12,7 @@ set -eu
 [ -w "$PWD" ] || exit 0
 
 scratch=$PWD/.ai-scratchpad
-days=${SANDBOX_SCRATCHPAD_DAYS:-14}
+days=${SANDBOX_SCRATCHPAD_DAYS:-7}
 
 case "$days" in
     off) ;;
