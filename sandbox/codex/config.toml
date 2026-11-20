@@ -1,0 +1,11 @@
+# Codex's system configuration in the agent image, /etc/codex/config.toml.
+# Codex reads it below the user's ~/.codex/config.toml, -c overrides and
+# flags, so it only supplies defaults that each of those can still change.
+#
+# Codex's bubblewrap sandbox cannot create its namespaces in this container
+# (no capabilities, Docker's default seccomp profile), so every command run
+# under it fails while codex exec still exits 0. The container is the
+# boundary instead: plain `codex exec`, as another agent runs it, gets the
+# same access as the session agent, which its launcher already starts with
+# --sandbox danger-full-access.
+sandbox_mode = "danger-full-access"

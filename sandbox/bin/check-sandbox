@@ -200,7 +200,7 @@ if grep -EHnv "^($selector|marketplace [A-Za-z0-9._-]+/[A-Za-z0-9._-]+|#.*|)\$" 
 fi
 
 grep -Fxq 'http_access deny all' "$root_dir/squid/squid.conf"
-for script in "$root_dir"/../install.sh "$root_dir"/bin/* "$root_dir"/image/sandbox-* "$root_dir"/image/init.d/* \
+for script in "$root_dir"/../install.sh "$root_dir"/bin/* "$root_dir"/image/sandbox-* "$root_dir"/image/init.d/* "$root_dir"/image/exit.d/* \
     "$root_dir"/claude/agent "$root_dir"/claude/auth "$root_dir"/claude/init.d/* \
     "$root_dir"/codex/agent "$root_dir"/codex/auth "$root_dir"/codex/init.d/*; do
     sh -n "$script"

@@ -17,7 +17,11 @@ A session is a set of Compose services, all from the sandbox's images:
   `claude` and `codex`, are installed and signed in from their own state
   volumes, so either agent can run the other non-interactively (such as
   `codex exec` for a delegated task); `SANDBOX_AGENT` names the one this
-  session started.
+  session started. Codex's own sandbox (bubblewrap) cannot start in this
+  container, so Codex runs with `danger-full-access` and the container is
+  the boundary: the image sets that as Codex's default and as
+  `CODEX_BUILD_SANDBOX`; do not pass `--sandbox read-only` or
+  `workspace-write`, under which every command fails.
 - **`egress-proxy`**: the only service with an Internet uplink. Every request
   leaves through it, and it allows only the base policy plus the project's
   approved additions.
@@ -59,6 +63,12 @@ session ends.
 - `/tmp` is writable, `noexec`, and emptied whenever the container starts.
   `/cache` is writable and allows executables. Everything else outside the
   agents' state volumes is read-only, including the home directory.
+- `.ai-scratchpad/` in the project is the agents' own working folder for
+  notes, plans, logs and scratch files that should outlast `/tmp`; it keeps
+  itself out of Git. At a normal exit, when it changed, the agent is run once
+  more to tidy it; each start deletes entries untouched for the project's last
+  `SANDBOX_SCRATCHPAD_DAYS` session days (default 7). Exit also deletes local
+  branches already merged, rebased or squashed into the default branch.
 - `XDG_CONFIG_HOME` defaults to `~/.claude/xdg`, shared by both agents, so
   plugins and tools can persist settings and task ledgers while the rest of
   the home is read-only. An explicit `XDG_CONFIG_HOME` is preserved.
@@ -105,7 +115,9 @@ is useful only when `ssh` is on and keys are unlocked.
 ### `agent.env`
 
 Environment variables and secrets for both agents and the commands they run,
-such as `CONTEXT7_API_KEY` (an optional key for Context7's rate limits), as
+such as `CONTEXT7_API_KEY` (an optional key for Context7's rate limits) or
+the session cleanup settings `SANDBOX_SCRATCHPAD_DAYS`, `SANDBOX_EXIT_CLEANUP`
+and `SANDBOX_EXIT_CURATE`, as
 literal `NAME=value` lines (no quotes, no `export`). Mode `0600`
 and ignored by Git. Use the variables it provides; do not read the file
 itself.
@@ -322,6 +334,38 @@ project.
 - Give the user commands to run from the project folder on the host, using
   the `docker compose --env-file .sandbox/env …` form; the `sandbox` shell
   functions are an optional convenience they may not have.
+
+### Working habits
+
+Defaults for any project; the project's own instructions override them.
+
+- Read first, then code: check the project's docs and search for existing
+  helpers and patterns before writing new ones, reuse them, and match the
+  project's naming. Hand-roll only when nothing applies, and say why.
+- Use the most precise tool available, such as a language server for
+  definitions and references rather than text search. When a tool fails or
+  is missing (a language server that does not start, an MCP server error, a
+  command not found), tell the user what failed and its error before falling
+  back; do not fall back silently.
+- Before diagnosing a failure, read its full output and logs. When the cause
+  stays unclear, add temporary logging instead of guessing, and remove it
+  afterwards unless the failure is likely to recur. Report initial findings
+  before going deep.
+- Keep behavior unchanged unless asked, and do not add single-use helpers or
+  new files without a reason.
+- Keep personal notes, plans and logs in `.ai-scratchpad/`, not in `/tmp`
+  or the project's tracked files, and never commit them. Start each note
+  with its date and topic, and delete it once its work is done.
+- Notes, memories and docs may be out of date: check them against the code
+  before relying on them. When you change behavior, update or remove what
+  describes it, replacing outdated text rather than appending to it.
+- Work on a branch, not the default branch, and commit in logical steps. A
+  pull request may hold several commits, and some plugins rely on them;
+  whether to squash is decided per pull request. Pushing and opening pull
+  requests still follow the session rules.
+- When the user corrects your approach or a non-obvious decision is made,
+  propose recording its reasoning, the why and not only the rule, in the
+  project's guidance files.
 
 ## What only the user can do
 

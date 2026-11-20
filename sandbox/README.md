@@ -138,7 +138,7 @@ It asks for an optional Context7 API key, then creates:
 | File | Contents |
 | --- | --- |
 | `.sandbox/env` | Compose settings (mode `0600`) |
-| `.sandbox/agent.env` | Environment variables and secrets for both agents, including `CONTEXT7_API_KEY` (mode `0600`) |
+| `.sandbox/agent.env` | Environment variables and secrets for both agents, including `CONTEXT7_API_KEY` and the session cleanup settings under [Session exit](#session-exit) (mode `0600`) |
 | `.sandbox/.gitignore` | Keeps `env` and `agent.env` out of Git |
 | `.sandbox/egress-policy.yaml` | Destinations this project adds to the base policy |
 | `.sandbox/ssh/config`, `.sandbox/ssh/known_hosts` | SSH client settings and host keys |
@@ -265,6 +265,29 @@ Each launch checks the registry for the Compose file, so starting a session
 needs network access even when everything is cached. Docker downloads the
 pinned images once and reuses them.
 
+### Session exit
+
+When the agent exits normally, the session cleans up after itself before the
+container goes:
+
+- Local branches whose work is already in the default branch (merged,
+  rebased or squashed into it) are deleted after a quick `git fetch --prune`.
+  The default branch, the checked-out branch, branches checked out in a
+  worktree and branches still at the default branch's tip stay. Each deletion
+  prints the `git branch` command that restores it.
+- When `.ai-scratchpad/` changed during the session, the agent tidies it
+  non-interactively for up to three minutes, deleting notes for finished work
+  and merging overlapping ones. Ctrl-C skips it, and it runs only at a
+  terminal.
+- Separately, each start deletes scratchpad entries untouched for the
+  project's last `SANDBOX_SCRATCHPAD_DAYS` session days (default 7). Only
+  days with a session count, so time away from a project does not age its
+  notes.
+
+Set these in `.sandbox/agent.env`: `SANDBOX_EXIT_CLEANUP=off` skips both exit
+steps, `SANDBOX_EXIT_CURATE=off` only the tidy-up, and
+`SANDBOX_SCRATCHPAD_DAYS=off` keeps scratchpad entries indefinitely.
+
 ## Files and mounts
 
 | Path in the session | Access |
@@ -272,6 +295,7 @@ pinned images once and reuses them.
 | The project, at `/workspace/<COMPOSE_PROJECT_NAME>` | Writable; the working directory |
 | `/reference`, when configured | Read-only |
 | `.sandbox/` in the project | Read-only |
+| `.ai-scratchpad/` in the project | Writable agent scratch space, ignored by Git; tidied by the agent at exit, and entries untouched for the project's last `SANDBOX_SCRATCHPAD_DAYS` session days (default 7, `off` keeps them) are deleted at start |
 | `~/.claude` and `~/.codex`, the agents' state volumes | Writable, shared by all projects |
 | `/tmp` | Writable, emptied whenever the container starts |
 | `~/.ssh` | `.sandbox/ssh`, read-only |
@@ -298,7 +322,10 @@ Both agents run without their own bubblewrap sandboxes, which Docker's default
 seccomp profile blocks. The container's boundary replaces them. The image
 sets `CODEX_BUILD_SANDBOX=danger-full-access`, so a Codex that another agent
 runs as a builder (phased-delivery's `codex-build.sh`) does the same instead
-of failing to start its own sandbox.
+of failing to start its own sandbox. Codex's system configuration,
+`/etc/codex/config.toml` from `codex/config.toml`, makes `danger-full-access`
+the default for plain `codex exec` as well; the user's
+`~/.codex/config.toml`, `-c` and `--sandbox` still override it.
 
 ## Egress policy
 
@@ -829,8 +856,12 @@ identity and starts the session leases for every command. The default `CMD`,
 `sandbox-start`, runs the executable scripts in
 `/usr/local/libexec/sandbox/init.d/` in name order, then those of the agent
 `SANDBOX_AGENT` names in `/usr/local/libexec/sandbox/<agent>/init.d/`, then
-the other agent's, and then execs the named agent's launcher,
-`/usr/local/libexec/sandbox/<agent>/agent`.
+the other agent's, and then runs the named agent's launcher,
+`/usr/local/libexec/sandbox/<agent>/agent`. It stays as the agent's parent,
+passing it the terminal and default Ctrl-C handling and forwarding a stop or
+hangup, and once the agent exits runs the scripts in
+`/usr/local/libexec/sandbox/exit.d/` in name order, best effort, before
+exiting with the agent's status. A `docker stop` skips them.
 Each agent's `init.d` scripts, `agent` and `auth` come from `claude/` or
 `codex/`; the shared scripts live in `image/`. Scripts that only make sense in a session check
 `SANDBOX_SESSION=1`, which the Compose file sets, so the agent image also runs on
@@ -890,8 +921,19 @@ for the apt and apk installation
 stages, so packages such as the GitHub CLI receive updates even when no
 pinned image version changes.
 
-Merges by the auto-merge workflow do not trigger push workflows, so it
-dispatches `release.yml` itself.
+Dependabot's pull requests merge themselves once the Sandbox image workflow
+passes (`dependabot-automerge.yml`). Any other pull request merges the same
+way when it carries the `automerge` label (a merge commit, keeping its
+commits) or `automerge-squash` (one squashed commit), through
+`automerge.yml`: when the checks pass, or when the label is added after
+they passed, and only if no commit arrived since. Adding the label is the
+request to merge and release, for example
+`gh pr edit <number> --add-label automerge`. A pull request that changes
+nothing under the workflow's paths gets no checks and is never merged
+automatically.
+
+Merges by the auto-merge workflows do not trigger push workflows, so they
+dispatch `release.yml` themselves.
 Publishing uses the workflow's `GITHUB_TOKEN`; no registry secret is needed.
 GHCR creates new packages as private: make the image and Compose packages
 public once, so sessions pull without a login.

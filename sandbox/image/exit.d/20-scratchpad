@@ -1,0 +1,35 @@
+#!/bin/sh
+# At session exit, when .ai-scratchpad/ changed during the session, have the
+# session's agent tidy it non-interactively: delete what is no longer
+# needed, keep what may be. Only after a normal exit at a terminal, so the
+# user sees it and Ctrl-C skips it; limited to three minutes. Off with
+# SANDBOX_EXIT_CURATE=off or SANDBOX_EXIT_CLEANUP=off. Age-based removal
+# stays with the startup hook (init.d/07-scratchpad).
+set -eu
+
+[ "${SANDBOX_SESSION:-}" = 1 ] || exit 0
+[ "${SANDBOX_EXIT_CLEANUP:-}" != off ] && [ "${SANDBOX_EXIT_CURATE:-}" != off ] || exit 0
+[ "${SANDBOX_EXIT_REASON:-normal}" = normal ] || exit 0
+[ -t 0 ] && [ -t 1 ] || exit 0
+
+scratch=$PWD/.ai-scratchpad
+started=${SANDBOX_SESSION_STARTED:-}
+[ -d "$scratch" ] && [ ! -L "$scratch" ] && [ -n "$started" ] && [ -e "$started" ] || exit 0
+changed=$(find "$scratch" -mindepth 1 ! -name .gitignore ! -name .session-days -newer "$started" -print -quit)
+[ -n "$changed" ] || exit 0
+
+prompt='Tidy this project'"'"'s .ai-scratchpad/ folder at the end of a work session; this is your only task.
+List everything in it, then:
+- Delete what is no longer needed: plans and task notes for work that is done (check the git log and branches), notes superseded by newer notes or by the project'"'"'s docs, and logs or outputs of finished runs.
+- Keep anything that may still be needed, and anything you are unsure about.
+- Where several notes cover the same topic, merge them into one.
+- Make sure each note you keep begins with the date it was last true and what it is about.
+- Never touch .gitignore or .session-days, and change nothing outside .ai-scratchpad/.
+Finish with one short line naming what you deleted or merged, or saying nothing needed tidying.'
+
+printf 'Tidying .ai-scratchpad with %s (Ctrl-C skips)...\n' "${SANDBOX_AGENT:-}"
+case "${SANDBOX_AGENT:-}" in
+    claude) timeout 180 claude -p --dangerously-skip-permissions "$prompt" </dev/null || : ;;
+    # codex exec streams its progress to stderr and the final message to stdout.
+    codex) timeout 180 codex exec --dangerously-bypass-approvals-and-sandbox "$prompt" </dev/null 2>/dev/null || : ;;
+esac
