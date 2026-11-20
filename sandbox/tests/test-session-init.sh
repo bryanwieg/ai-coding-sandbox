@@ -2,7 +2,7 @@
 # Runtime test for the session startup hooks in the agent base image, with
 # stubbed agent, GitHub and ssh-add commands: .sandbox/env and SSH key
 # refusals; egress policy and SSH warnings; logins only when signed
-# out, and only prompting with a terminal.
+# out, and only prompting with a terminal; the scratchpad and its cleanup.
 set -eu
 
 sandbox_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -138,6 +138,43 @@ if ! printf '%s\n' "$output" | grep -q LOGIN-AGENT && printf '%s\n' "$output" | 
 else
     fail "unexpected logins: $output"
 fi
+
+scratch=$project/.ai-scratchpad
+check 'the scratchpad is created silently' 0 '' 07-scratchpad
+if [ "$(cat "$scratch/.gitignore")" = '*' ]; then
+    pass 'the scratchpad ignores itself in Git'
+else
+    fail 'the scratchpad has no self-ignoring .gitignore'
+fi
+mkdir -p "$scratch/old-dir"
+: > "$scratch/old"
+: > "$scratch/old-dir/note"
+: > "$scratch/fresh"
+touch -d '30 days ago' "$scratch/old" "$scratch/old-dir/note" "$scratch/.gitignore"
+check 'the image outside a session leaves the scratchpad alone' 0 '' 07-scratchpad -e SANDBOX_SESSION=
+check 'cleanup off keeps old entries' 0 '' 07-scratchpad -e SANDBOX_SCRATCHPAD_DAYS=off
+if [ -e "$scratch/old" ]; then pass 'old entries survive with cleanup off'; else fail 'cleanup off removed entries'; fi
+check 'an invalid age warns and keeps old entries' 0 'must be a number of days' 07-scratchpad \
+    -e SANDBOX_SCRATCHPAD_DAYS=soon
+if [ -e "$scratch/old" ]; then pass 'old entries survive an invalid age'; else fail 'an invalid age removed entries'; fi
+check 'the scratchpad is cleaned silently' 0 '' 07-scratchpad
+if [ ! -e "$scratch/old" ] && [ ! -e "$scratch/old-dir" ] && [ -e "$scratch/fresh" ] && [ -e "$scratch/.gitignore" ]; then
+    pass 'old entries and emptied folders go; fresh entries and .gitignore stay'
+else
+    fail "unexpected scratchpad contents: $(cd "$scratch" && find . | sort | tr '\n' ' ')"
+fi
+rm -r "$scratch"
+mkdir "$test_dir/outside"
+: > "$test_dir/outside/keep"
+touch -d '30 days ago' "$test_dir/outside/keep"
+ln -s "$test_dir/outside" "$scratch"
+check 'a linked scratchpad warns and is left alone' 0 'not a plain folder' 07-scratchpad
+if [ -e "$test_dir/outside/keep" ]; then
+    pass 'nothing behind a linked scratchpad is removed'
+else
+    fail 'cleanup followed the scratchpad link'
+fi
+rm "$scratch"
 
 [ "$failures" -eq 0 ] || { echo "$failures check(s) failed." >&2; exit 1; }
 echo 'Session startup checks passed.'

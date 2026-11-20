@@ -59,6 +59,12 @@ session ends.
 - `/tmp` is writable, `noexec`, and emptied whenever the container starts.
   `/cache` is writable and allows executables. Everything else outside the
   agents' state volumes is read-only, including the home directory.
+- `.ai-scratchpad/` in the project is the agents' own working folder for
+  notes, plans, logs and scratch files that should outlast `/tmp`. Each
+  session start creates it with a `.gitignore` that keeps it out of Git, and
+  deletes entries untouched for `SANDBOX_SCRATCHPAD_DAYS` days (default 14;
+  `off` keeps them). Anything in it may disappear, so keep nothing there
+  that belongs in the project.
 - `XDG_CONFIG_HOME` defaults to `~/.claude/xdg`, shared by both agents, so
   plugins and tools can persist settings and task ledgers while the rest of
   the home is read-only. An explicit `XDG_CONFIG_HOME` is preserved.
@@ -105,7 +111,8 @@ is useful only when `ssh` is on and keys are unlocked.
 ### `agent.env`
 
 Environment variables and secrets for both agents and the commands they run,
-such as `CONTEXT7_API_KEY` (an optional key for Context7's rate limits), as
+such as `CONTEXT7_API_KEY` (an optional key for Context7's rate limits) or
+`SANDBOX_SCRATCHPAD_DAYS` (how long `.ai-scratchpad/` keeps entries), as
 literal `NAME=value` lines (no quotes, no `export`). Mode `0600`
 and ignored by Git. Use the variables it provides; do not read the file
 itself.
@@ -322,6 +329,34 @@ project.
 - Give the user commands to run from the project folder on the host, using
   the `docker compose --env-file .sandbox/env …` form; the `sandbox` shell
   functions are an optional convenience they may not have.
+
+### Working habits
+
+Defaults for any project; the project's own instructions override them.
+
+- Read first, then code: check the project's docs and search for existing
+  helpers and patterns before writing new ones, reuse them, and match the
+  project's naming. Hand-roll only when nothing applies, and say why.
+- Use the most precise tool available, such as a language server for
+  definitions and references rather than text search. When a tool fails or
+  is missing (a language server that does not start, an MCP server error, a
+  command not found), tell the user what failed and its error before falling
+  back; do not fall back silently.
+- Before diagnosing a failure, read its full output and logs. When the cause
+  stays unclear, add temporary logging instead of guessing, and remove it
+  afterwards unless the failure is likely to recur. Report initial findings
+  before going deep.
+- Keep behavior unchanged unless asked, and do not add single-use helpers or
+  new files without a reason.
+- Keep personal notes, plans and logs in `.ai-scratchpad/`, not in `/tmp`
+  or the project's tracked files, and never commit them.
+- Work on a branch, not the default branch, and commit in logical steps. A
+  pull request may hold several commits, and some plugins rely on them;
+  whether to squash is decided per pull request. Pushing and opening pull
+  requests still follow the session rules.
+- When the user corrects your approach or a non-obvious decision is made,
+  propose recording its reasoning, the why and not only the rule, in the
+  project's guidance files.
 
 ## What only the user can do
 

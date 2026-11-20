@@ -138,7 +138,7 @@ It asks for an optional Context7 API key, then creates:
 | File | Contents |
 | --- | --- |
 | `.sandbox/env` | Compose settings (mode `0600`) |
-| `.sandbox/agent.env` | Environment variables and secrets for both agents, including `CONTEXT7_API_KEY` (mode `0600`) |
+| `.sandbox/agent.env` | Environment variables and secrets for both agents, including `CONTEXT7_API_KEY` and `SANDBOX_SCRATCHPAD_DAYS` (mode `0600`) |
 | `.sandbox/.gitignore` | Keeps `env` and `agent.env` out of Git |
 | `.sandbox/egress-policy.yaml` | Destinations this project adds to the base policy |
 | `.sandbox/ssh/config`, `.sandbox/ssh/known_hosts` | SSH client settings and host keys |
@@ -272,6 +272,7 @@ pinned images once and reuses them.
 | The project, at `/workspace/<COMPOSE_PROJECT_NAME>` | Writable; the working directory |
 | `/reference`, when configured | Read-only |
 | `.sandbox/` in the project | Read-only |
+| `.ai-scratchpad/` in the project | Writable agent scratch space, ignored by Git; each start deletes entries older than `SANDBOX_SCRATCHPAD_DAYS` days (default 14, `off` keeps them) |
 | `~/.claude` and `~/.codex`, the agents' state volumes | Writable, shared by all projects |
 | `/tmp` | Writable, emptied whenever the container starts |
 | `~/.ssh` | `.sandbox/ssh`, read-only |

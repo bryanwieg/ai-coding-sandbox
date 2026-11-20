@@ -1,0 +1,37 @@
+#!/bin/sh
+# The project's .ai-scratchpad/ holds the agents' working notes and scratch
+# files across sessions. Create it, keep it out of Git with its own
+# .gitignore (the project's .gitignore and .git stay untouched), and delete
+# entries older than SANDBOX_SCRATCHPAD_DAYS (default 14; "off" keeps
+# everything), so it never grows without bound. Only sessions do this.
+set -eu
+
+[ "${SANDBOX_SESSION:-}" = 1 ] || exit 0
+[ -w "$PWD" ] || exit 0
+
+scratch=$PWD/.ai-scratchpad
+days=${SANDBOX_SCRATCHPAD_DAYS:-14}
+
+case "$days" in
+    off) ;;
+    '' | *[!0-9]*)
+        printf 'Warning: SANDBOX_SCRATCHPAD_DAYS must be a number of days or off, not %s; keeping .ai-scratchpad as it is.\n' \
+            "$days" >&2
+        days=off
+        ;;
+esac
+
+# A link could point outside the project; never create or clean through one.
+if [ -L "$scratch" ] || { [ -e "$scratch" ] && [ ! -d "$scratch" ]; }; then
+    printf 'Warning: .ai-scratchpad is not a plain folder; leaving it alone.\n' >&2
+    exit 0
+fi
+mkdir -p "$scratch"
+if [ ! -e "$scratch/.gitignore" ] && [ ! -L "$scratch/.gitignore" ]; then
+    printf '*\n' > "$scratch/.gitignore"
+fi
+
+[ "$days" != off ] || exit 0
+# find does not follow links, so only entries inside the folder are removed.
+find "$scratch" -mindepth 1 ! -type d ! -path "$scratch/.gitignore" -mtime "+$days" -delete 2>/dev/null || true
+find "$scratch" -mindepth 1 -type d -empty -delete 2>/dev/null || true
