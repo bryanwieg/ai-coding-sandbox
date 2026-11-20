@@ -4,7 +4,8 @@
 # SANDBOX_PUBLISH_PORTS, SANDBOX_PUBLISH_PORTS_2 and SANDBOX_PUBLISH_PORTS_3
 # for TCP, and SANDBOX_PUBLISH_UDP_PORTS, _UDP_PORTS_2 and _UDP_PORTS_3 for
 # UDP, each one port or a contiguous range, at most 100 ports in all. It
-# exits when the daemon's container is gone. It checks the daemon by name
+# exits with the project in Compose. Standalone it exits when the daemon's
+# container is gone. It checks the daemon by name
 # rather than by connecting, because the daemon counts connections to its
 # port as a client lease.
 set -eu
@@ -55,6 +56,25 @@ plan=$(slots)
 [ -n "$plan" ] || exit 0
 
 pids=
+# shellcheck disable=SC2086 # pids is a list of process IDs.
+trap 'if [ -n "$pids" ]; then kill $pids 2>/dev/null || :; for pid in $pids; do wait "$pid" || :; done; fi' EXIT
+trap 'exit 0' TERM INT
+
+if [ "${SANDBOX_LIFECYCLE:-}" = 1 ]; then
+    ready=/tmp/sandbox-lifecycle-ready
+    sandbox-lifecycle observe "$$" "$ready" &
+    lifecycle=$!
+    for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        [ ! -f "$ready" ] || break
+        kill -0 "$lifecycle" 2>/dev/null || break
+        sleep 0.2
+    done
+    if [ ! -f "$ready" ]; then
+        echo 'sandbox-forward: project lifecycle is unavailable; retry after the services stop.' >&2
+        exit 1
+    fi
+fi
+
 while read -r protocol first last; do
     port=$first
     while [ "$port" -le "$last" ]; do
@@ -70,16 +90,15 @@ while read -r protocol first last; do
 done <<EOF
 $plan
 EOF
-# shellcheck disable=SC2086 # pids is a list of process IDs.
-trap 'kill $pids 2>/dev/null || :' EXIT
-trap 'exit 0' TERM INT
-
 missing=0
 while :; do
     sleep "$interval"
     for pid in $pids; do
         kill -0 "$pid" 2>/dev/null || fail 'a port relay stopped; exiting.'
     done
+    if [ "${SANDBOX_LIFECYCLE:-}" = 1 ] && ! kill -0 "$lifecycle" 2>/dev/null; then
+        fail 'the lifecycle helper stopped; exiting.'
+    fi
     # A lookup of a vanished name can block on resolver retries; bound it.
     if timeout 2 getent hosts docker >/dev/null 2>&1; then
         missing=0

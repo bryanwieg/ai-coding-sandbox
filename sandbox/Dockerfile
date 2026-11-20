@@ -8,6 +8,10 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0.404-noble-amd64@sha256:a82c44c2efe00953d6
 # Go distribution under /usr/local/go reaches the agent images.
 FROM golang:1.27.4-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea AS go-upstream
 
+FROM go-upstream AS lifecycle
+COPY lifecycle/main.go /src/main.go
+RUN CGO_ENABLED=0 go build -trimpath -o /sandbox-lifecycle /src/main.go
+
 FROM python:3.15-slim-bookworm@sha256:96599df822d0e1c6bb700014a05c7f3c8cabc6e0f7ff3c4f9f69cee033b4b5d9 AS python-runtime
 
 # Keep independently updated dependencies out of each other's build cache.
@@ -74,15 +78,20 @@ RUN set -eu; \
 # world-writable, sticky data volume.
 ENV XDG_DATA_HOME=/home/rootless/.local/share/docker
 COPY --chmod=0755 image/sandbox-dockerd /usr/local/bin/sandbox-dockerd
+COPY --from=lifecycle /sandbox-lifecycle /usr/local/bin/sandbox-lifecycle
+RUN install -d -m 0755 -o 13 -g 13 /run/sandbox-sidecar-lifecycle
 ENTRYPOINT ["/usr/local/bin/sandbox-dockerd"]
 USER 1000
 
 # Published port forwarder. It only relays the ports in SANDBOX_PUBLISH_PORTS
 # from the host to the session daemon, and exits with the daemon.
 FROM alpine/socat:1.8.1.3@sha256:71131702f671a88b3808a70b7330f9679cd9b9933adcafadc191508edfe55bba AS session-forwarder
-USER 65534:65534
+USER root
 COPY --chmod=0755 image/sandbox-forward /usr/local/bin/sandbox-forward
+COPY --from=lifecycle /sandbox-lifecycle /usr/local/bin/sandbox-lifecycle
+RUN install -d -m 0755 -o 13 -g 13 /run/sandbox-sidecar-lifecycle
 ENTRYPOINT ["/usr/local/bin/sandbox-forward"]
+USER 65534:65534
 
 # Offline project initializer, independent of both agent images.
 FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS session-init
@@ -103,6 +112,8 @@ RUN apk add --no-cache openssh-client \
     && mv /tmp/passwd /etc/passwd \
     && chmod 0644 /etc/passwd
 COPY --chmod=0755 image/sandbox-ssh-agent image/sandbox-ssh-unlock /usr/local/bin/
+COPY --from=lifecycle /sandbox-lifecycle /usr/local/bin/sandbox-lifecycle
+RUN install -d -m 0755 -o 13 -g 13 /run/sandbox-sidecar-lifecycle
 ENTRYPOINT ["/usr/local/bin/sandbox-ssh-agent"]
 USER 65534:65534
 
@@ -110,10 +121,13 @@ USER 65534:65534
 # adds a project's policy only once approved; the same image runs the trust
 # command.
 FROM ubuntu/squid:6.6-24.04_beta@sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029 AS session-proxy
+USER root
 COPY --chmod=0644 squid/squid.conf /etc/squid/squid.conf.template
 COPY --chmod=0644 squid/base-policy.yaml /etc/squid/base-policy.yaml
 COPY --chmod=0755 image/sandbox-policy image/sandbox-proxy image/sandbox-proxy-config \
     image/sandbox-trust /usr/local/bin/
+COPY --from=lifecycle /sandbox-lifecycle /usr/local/bin/sandbox-lifecycle
+RUN install -d -m 0755 -o 13 -g 13 /run/sandbox-agent-leases /run/sandbox-sidecar-lifecycle
 ENTRYPOINT ["/usr/local/bin/sandbox-proxy"]
 USER 13:13
 
@@ -189,6 +203,8 @@ ENV POWERSHELL_TELEMETRY_OPTOUT=1 \
 # /usr/local/libexec/sandbox/<agent>/. SANDBOX_AGENT (claude or codex), set by
 # each Compose service, names the launched agent. sandbox-auth gives both
 # agents the same status|login|logout interface over their own auth scripts.
+COPY --from=lifecycle /sandbox-lifecycle /usr/local/bin/sandbox-lifecycle
+RUN install -d -m 0755 -o 13 -g 13 /run/sandbox-agent-leases
 COPY image/sandbox-entrypoint image/sandbox-start image/sandbox-auth \
     image/sandbox-agent-version image/sandbox-initialize-state \
     image/sandbox-check-context7 image/sandbox-policy image/sandbox-docker-lease \

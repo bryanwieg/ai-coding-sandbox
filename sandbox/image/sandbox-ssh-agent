@@ -1,7 +1,7 @@
 #!/bin/sh
 # SSH agent entrypoint for the session-ssh-agent image. It serves an empty
 # ssh-agent on the shared socket for sandbox-ssh-unlock to load keys into, and
-# exits when nothing was unlocked within SANDBOX_SSH_START_GRACE seconds, or
+# shuts down with the project in Compose. Standalone, it exits when nothing was unlocked within SANDBOX_SSH_START_GRACE seconds, or
 # once the agent holds no keys any more (expired or removed), so the sidecar
 # lives as long as its keys.
 set -eu
@@ -14,8 +14,32 @@ grace=${SANDBOX_SSH_START_GRACE:-120}
 rm -f "$socket"
 ssh-agent -D -a "$socket" -t "$lifetime" >/dev/null &
 agent=$!
-trap 'kill "$agent" 2>/dev/null || :; rm -f "$socket"' EXIT
+trap 'kill "$agent" 2>/dev/null || :; wait "$agent" || :; rm -f "$socket"' EXIT
 trap 'exit 0' TERM INT
+
+if [ "${SANDBOX_LIFECYCLE:-}" = 1 ]; then
+    ready=/tmp/sandbox-lifecycle-ready
+    sandbox-lifecycle observe "$$" "$ready" &
+    lifecycle=$!
+    for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        [ ! -f "$ready" ] || break
+        kill -0 "$lifecycle" 2>/dev/null || break
+        sleep 0.2
+    done
+    if [ ! -f "$ready" ]; then
+        echo 'sandbox-ssh-agent: project lifecycle is unavailable; retry after the services stop.' >&2
+        exit 1
+    fi
+    while kill -0 "$agent" 2>/dev/null; do
+        if ! kill -0 "$lifecycle" 2>/dev/null; then
+            echo 'sandbox-ssh-agent: lifecycle helper stopped.' >&2
+            exit 1
+        fi
+        sleep 1
+    done
+    wait "$agent"
+    exit 0
+fi
 
 loaded=false
 elapsed=0

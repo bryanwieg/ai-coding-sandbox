@@ -88,13 +88,6 @@ HELP
             if printf '%s\n' "$sandbox_services" | grep -Fxq ssh-agent; then
                 docker compose --env-file .sandbox/env run --rm ssh-unlock --if-needed || return
             fi
-            # The proxy and daemon stop a few seconds after their last session;
-            # hold running ones up while this launch starts. Older images and
-            # stopped services ignore it.
-            docker compose --env-file .sandbox/env exec -T egress-proxy touch /tmp/launch-hold >/dev/null 2>&1 || :
-            if printf '%s\n' "$sandbox_services" | grep -Fxq docker; then
-                docker compose --env-file .sandbox/env exec -T docker touch /tmp/launch-hold >/dev/null 2>&1 || :
-            fi
             ;;
     esac
     local sandbox_status=0

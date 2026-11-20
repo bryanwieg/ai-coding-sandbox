@@ -34,7 +34,27 @@ NSS_WRAPPER_GROUP="$identity_dir/group"
 LD_PRELOAD="/usr/local/lib/libnss_wrapper.so${LD_PRELOAD:+:$LD_PRELOAD}"
 export NSS_WRAPPER_PASSWD NSS_WRAPPER_GROUP LD_PRELOAD
 
-# Sessions (SANDBOX_SESSION=1), for every command (the
+# Start the lease for Compose before giving control to any command.
+if [ "${SANDBOX_LIFECYCLE:-}" = 1 ]; then
+    ready=/tmp/sandbox-lifecycle-ready
+    nohup setsid sandbox-lifecycle hold "$$" "$ready" </dev/null >/dev/null 2>&1 &
+    lifecycle=$!
+    for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        [ ! -f "$ready" ] || break
+        kill -0 "$lifecycle" 2>/dev/null || break
+        sleep 0.2
+    done
+    if [ ! -f "$ready" ]; then
+        echo 'sandbox-entrypoint: project lifecycle is unavailable; retry after the services stop.' >&2
+        exit 1
+    fi
+    if [ -n "${DOCKER_HOST:-}" ] && ! timeout 2 getent hosts docker >/dev/null 2>&1; then
+        unset DOCKER_HOST DOCKER_TLS_VERIFY DOCKER_CERT_PATH SANDBOX_DOCKER_SOCKET
+    fi
+    exec "$@"
+fi
+
+# Standalone sessions (SANDBOX_SESSION=1), for every command (the
 # default start and overrides such as a shell alike). Background leases hold a
 # connection to the egress proxy and, when there is one, the session daemon
 # for the container's life, since both stop once no session is connected.

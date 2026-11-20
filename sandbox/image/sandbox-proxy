@@ -3,7 +3,8 @@
 # from the base policy and the project's approved additions, and the host's
 # sandbox command reloads it in place with sandbox-proxy-config --reload when
 # the approved policy changes.
-# Each session holds an idle connection to port 3128 (sandbox-proxy-lease), so
+# Compose receives coordinated shutdown from the lifecycle broker. Standalone,
+# each session holds an idle connection to port 3128 (sandbox-proxy-lease), so
 # the proxy stops once SANDBOX_PROXY_IDLE_CHECKS consecutive checks, one every
 # SANDBOX_PROXY_IDLE_INTERVAL seconds, find no connection open and none
 # accepted since the previous check, or when none arrives within
@@ -22,7 +23,39 @@ rendered_config=/tmp/squid.conf
 sandbox-proxy-config
 squid -N -f "$rendered_config" &
 squid=$!
-trap 'kill -TERM "$squid" 2>/dev/null || :' TERM INT
+stopping=false
+trap 'stopping=true; kill -TERM "$squid" 2>/dev/null || :' TERM INT
+
+if [ "${SANDBOX_LIFECYCLE:-}" = 1 ]; then
+    status=0
+    ready=/tmp/sandbox-lifecycle-ready
+    sandbox-lifecycle serve "$$" "$ready" &
+    lifecycle=$!
+    for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        [ ! -f "$ready" ] || break
+        kill -0 "$lifecycle" 2>/dev/null || break
+        sleep 0.2
+    done
+    if [ ! -f "$ready" ]; then
+        echo 'sandbox-proxy: project lifecycle is unavailable; retry after the services stop.' >&2
+        kill -TERM "$squid" 2>/dev/null || :
+        wait "$squid" || :
+        exit 1
+    fi
+    while [ "$stopping" = false ] &&
+        kill -0 "$squid" 2>/dev/null && kill -0 "$lifecycle" 2>/dev/null; do
+        sleep 1
+    done
+    if [ "$stopping" = false ] && kill -0 "$squid" 2>/dev/null; then
+        echo 'sandbox-proxy: lifecycle helper stopped.' >&2
+        kill -TERM "$squid" 2>/dev/null || :
+        status=1
+    fi
+    while kill -0 "$squid" 2>/dev/null; do
+        wait "$squid" || :
+    done
+    exit "$status"
+fi
 
 # Connections accepted so far (PassiveOpens in this network namespace), so a
 # session shorter than one check still counts as activity.

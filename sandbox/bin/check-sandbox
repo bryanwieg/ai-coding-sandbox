@@ -56,6 +56,27 @@ printf '%s\n' "$rendered_session" | jq -e --arg reference "$check_dir" '
         (if ([ (.volumes // [])[] | select(.target == "/keys") ] | length > 0)
          then ($name | test("^ssh-")) and all(.volumes[] | select(.target == "/keys"); .read_only == true)
          else true end)) and
+    # Only the proxy creates sockets. A nested Docker workload can see the
+    # observer volume but cannot reach the separate agent admission socket.
+    ([.volumes["agent-leases"].name, .volumes["sidecar-lifecycle"].name] ==
+        ["sandbox-check_agent-leases", "sandbox-check_sidecar-lifecycle"]) and
+    .volumes as $volumes |
+    all(["agent-leases", "sidecar-lifecycle"][]; $volumes[.] |
+        ((.external // false) == false) and ((.driver // "local") == "local") and
+        ((.driver_opts // {}) == {})) and
+    ([ $s | to_entries[] as $entry | $entry.value.volumes[]? |
+        select(.source == "agent-leases" or .source == "sidecar-lifecycle" or
+            .target == "/run/sandbox-agent-leases" or .target == "/run/sandbox-sidecar-lifecycle") |
+        [$entry.key, .type, .source, .target, (.read_only // false)] ] | sort ==
+        [["claude", "volume", "agent-leases", "/run/sandbox-agent-leases", true],
+         ["codex", "volume", "agent-leases", "/run/sandbox-agent-leases", true],
+         ["docker", "volume", "sidecar-lifecycle", "/run/sandbox-sidecar-lifecycle", true],
+         ["egress-proxy", "volume", "agent-leases", "/run/sandbox-agent-leases", false],
+         ["egress-proxy", "volume", "sidecar-lifecycle", "/run/sandbox-sidecar-lifecycle", false],
+         ["publish", "volume", "sidecar-lifecycle", "/run/sandbox-sidecar-lifecycle", true],
+         ["ssh-agent", "volume", "sidecar-lifecycle", "/run/sandbox-sidecar-lifecycle", true]]) and
+    all(["claude", "codex", "docker", "egress-proxy", "publish", "ssh-agent"][];
+        $s[.].environment.SANDBOX_LIFECYCLE == "1") and
     ($s.docker as $d |
         (($d.security_opt | sort) == ["label=disable", "seccomp=unconfined", "systempaths=unconfined"]) and
         ([ $d.devices[] | .source ] == ["/dev/net/tun"]) and

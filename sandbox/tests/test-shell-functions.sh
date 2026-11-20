@@ -4,7 +4,6 @@
 # pass the right docker commands, in bash and, when installed, zsh; and a
 # running proxy, at launch or after sandbox-trust, is reloaded only when its
 # policy differs from the approved one, and restarted when it cannot reload;
-# and a launch holds the running proxy and, with Docker, the daemon up; and
 # an agent session ends by removing only the released images nothing uses;
 # and at a Git repository's root without .sandbox/env, sandbox initializes
 # and stages it before launching, but nowhere else.
@@ -39,13 +38,6 @@ case "$*" in
         [ "${SANDBOX_TEST_FAIL:-}" != config ] || exit 41
         printf 'claude\ncodex\n'
         [ "${SANDBOX_TEST_SSH:-}" != 1 ] || printf 'ssh-agent\nssh-unlock\n'
-        [ "${SANDBOX_TEST_DOCKER:-}" != 1 ] || printf 'docker\n'
-        exit 0
-        ;;
-    'compose --env-file .sandbox/env exec -T '*' touch /tmp/launch-hold')
-        # Holds go to a log; a stopped service (SANDBOX_TEST_FAIL=hold) fails.
-        printf '%s\n' "$6" >> "$SANDBOX_TEST_HOLDS"
-        [ "${SANDBOX_TEST_FAIL:-}" != hold ] || exit 47
         exit 0
         ;;
     'compose --env-file .sandbox/env exec -T egress-proxy sandbox-proxy-config --reload')
@@ -125,19 +117,6 @@ for shell in bash zsh; do
     done
     if run "$test_dir/empty" sandbox 2>"$test_dir/err"; then exit 1; fi
     grep -Fq 'no .sandbox/env here' "$test_dir/err"
-    holds=$test_dir/holds
-    export SANDBOX_TEST_HOLDS="$holds"
-    : > "$holds"
-    run "$test_dir/project" 'sandbox claude bash' >/dev/null
-    [ "$(tr '\n' ' ' < "$holds")" = 'egress-proxy ' ]
-    : > "$holds"
-    run "$test_dir/project" 'SANDBOX_TEST_DOCKER=1 sandbox' >/dev/null
-    [ "$(tr '\n' ' ' < "$holds")" = 'egress-proxy docker ' ]
-    : > "$holds"
-    run "$test_dir/project" 'SANDBOX_TEST_DOCKER=1 SANDBOX_TEST_FAIL=hold sandbox' | grep -Fxq claude
-    : > "$holds"
-    run "$test_dir/project" 'sandbox trust' >/dev/null
-    [ ! -s "$holds" ]
     trust='compose --env-file .sandbox/env run --rm -T trust --yes '
     unlock='compose --env-file .sandbox/env run --rm ssh-unlock --if-needed '
     launch='compose --env-file .sandbox/env run --rm '

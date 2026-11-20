@@ -29,6 +29,7 @@ x-agent-environment: &agent-environment
   https_proxy: "http://egress-proxy:3128"
   no_proxy: "localhost,127.0.0.1,egress-proxy,docker"
   SANDBOX_SESSION: "1"
+  SANDBOX_LIFECYCLE: "1"
   SANDBOX_REFERENCE: "${SANDBOX_REFERENCE:-}"
   HOST_PWD: "${PWD:?Start from the project folder}"
   SANDBOX_PROFILES: "${COMPOSE_PROFILES:-}"
@@ -172,7 +173,7 @@ services:
       egress-proxy: {condition: service_healthy}
       docker: {condition: service_healthy, required: false}
       publish: {condition: service_started, required: false}
-      ssh-agent: {condition: service_started, required: false}
+      ssh-agent: {condition: service_healthy, required: false}
       claude-state-init: {condition: service_completed_successfully}
       codex-state-init: {condition: service_completed_successfully}
     environment:
@@ -192,6 +193,7 @@ services:
       - *docker-client-certs
       - *ssh-socket
       - *trust-store
+      - {type: volume, source: agent-leases, target: /run/sandbox-agent-leases, read_only: true}
 
   codex:
     <<: *agent-service
@@ -244,6 +246,7 @@ services:
     user: "13:13"
     environment:
       HOST_PWD: "${PWD}"
+      SANDBOX_LIFECYCLE: "1"
     tmpfs:
       - /run
       - /tmp:mode=1777
@@ -252,10 +255,12 @@ services:
     volumes:
       - {type: bind, source: "${PWD}/.sandbox/egress-policy.yaml", target: /etc/squid/project-policy.yaml, read_only: true, bind: {create_host_path: false}}
       - {type: volume, source: trust, target: /trust, read_only: true}
+      - {type: volume, source: agent-leases, target: /run/sandbox-agent-leases}
+      - {type: volume, source: sidecar-lifecycle, target: /run/sandbox-sidecar-lifecycle}
     expose:
       - "3128"
     healthcheck:
-      test: ["CMD-SHELL", "squid -k parse -f /tmp/squid.conf >/dev/null 2>&1 && test -r /tmp/squid.pid && kill -0 \"$(cat /tmp/squid.pid)\""]
+      test: ["CMD-SHELL", "test -f /tmp/sandbox-lifecycle-ready && squid -k parse -f /tmp/squid.conf >/dev/null 2>&1 && test -r /tmp/squid.pid && kill -0 \"$(cat /tmp/squid.pid)\""]
       interval: 2s
       timeout: 2s
       retries: 15
@@ -264,8 +269,8 @@ services:
       - session-internal
       - session-uplink
 
-  # Rootless daemon for this project's sessions; it stops itself once no agent
-  # holds a connection, and starts empty unless SANDBOX_DOCKER_DATA=persistent. Its privilege exceptions are the
+  # Rootless daemon for this project's sessions. It stops with the project and
+  # starts empty unless SANDBOX_DOCKER_DATA=persistent. Its privilege exceptions are the
   # rootless daemon's: user namespaces need SETUID/SETGID for newuidmap and
   # newgidmap, unconfined seccomp and system paths, and no no-new-privileges.
   docker:
@@ -290,6 +295,7 @@ services:
     mem_limit: "${SANDBOX_DOCKER_MEMORY:-4g}"
     pids_limit: 4096
     environment:
+      SANDBOX_LIFECYCLE: "1"
       XDG_RUNTIME_DIR: "/run/user/${SANDBOX_UID}"
       SANDBOX_GID: "${SANDBOX_GID}"
       SANDBOX_DOCKER_DATA: "${SANDBOX_DOCKER_DATA:-ephemeral}"
@@ -307,8 +313,9 @@ services:
       - *config-mount
       - {type: volume, source: docker-data, target: /home/rootless/.local/share/docker}
       - {type: volume, source: docker-certs, target: /certs}
+      - &sidecar-lifecycle {type: volume, source: sidecar-lifecycle, target: /run/sandbox-sidecar-lifecycle, read_only: true}
     healthcheck:
-      test: ["CMD-SHELL", "docker --host \"unix://$$XDG_RUNTIME_DIR/docker.sock\" info >/dev/null 2>&1 && test -s /certs/client/key.pem"]
+      test: ["CMD-SHELL", "test -f /tmp/sandbox-lifecycle-ready && docker --host \"unix://$$XDG_RUNTIME_DIR/docker.sock\" info >/dev/null 2>&1 && test -s /certs/client/key.pem"]
       interval: 2s
       timeout: 5s
       retries: 30
@@ -328,9 +335,15 @@ services:
     profiles: ["publish"]
     image: ghcr.io/bryanwieg/ai-coding-sandbox:forwarder-latest
     depends_on:
+      egress-proxy: {condition: service_healthy}
       docker: {condition: service_healthy, required: false}
     user: "65534:65534"
+    tmpfs:
+      - /tmp:mode=1777
+    volumes:
+      - *sidecar-lifecycle
     environment:
+      SANDBOX_LIFECYCLE: "1"
       SANDBOX_PUBLISH_PORTS: "${SANDBOX_PUBLISH_PORTS:-}"
       SANDBOX_PUBLISH_PORTS_2: "${SANDBOX_PUBLISH_PORTS_2:-}"
       SANDBOX_PUBLISH_PORTS_3: "${SANDBOX_PUBLISH_PORTS_3:-}"
@@ -349,18 +362,29 @@ services:
       - session-publish
 
   # Serves the unlocked keys to agents through the socket volume; only it and
-  # ssh-unlock mount the key folder. It lives until its keys expire.
+  # ssh-unlock mount the key folder. It shuts down with the project.
   ssh-agent:
     <<: *hardened
     profiles: ["ssh"]
     image: ghcr.io/bryanwieg/ai-coding-sandbox:ssh-agent-latest
+    depends_on:
+      egress-proxy: {condition: service_healthy}
     user: "${SANDBOX_UID}:${SANDBOX_GID}"
     network_mode: none
+    tmpfs:
+      - /tmp:mode=1777
     environment:
+      SANDBOX_LIFECYCLE: "1"
       SANDBOX_SSH_KEY_LIFETIME: "${SANDBOX_SSH_KEY_LIFETIME:-8h}"
     volumes:
       - &ssh-keys {type: bind, source: "${SANDBOX_SSH_KEY_DIR:-${HOME}/.config/ai-coding-sandbox/ssh-keys}", target: /keys, read_only: true, bind: {create_host_path: false}}
       - {type: volume, source: ssh-socket, target: /run/ssh-agent}
+      - *sidecar-lifecycle
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/sandbox-lifecycle-ready && test -S /run/ssh-agent/agent.sock"]
+      interval: 1s
+      timeout: 1s
+      retries: 5
 
   # docker compose --env-file .sandbox/env run --rm ssh-unlock
   ssh-unlock:
@@ -369,7 +393,7 @@ services:
     image: ghcr.io/bryanwieg/ai-coding-sandbox:ssh-agent-latest
     entrypoint: ["/usr/local/bin/sandbox-ssh-unlock"]
     depends_on:
-      ssh-agent: {condition: service_started}
+      ssh-agent: {condition: service_healthy}
     user: "${SANDBOX_UID}:${SANDBOX_GID}"
     network_mode: none
     stdin_open: true
@@ -425,6 +449,8 @@ volumes:
   cache:
   docker-certs:
   ssh-socket:
+  agent-leases:
+  sidecar-lifecycle:
 
 networks:
   session-internal:
