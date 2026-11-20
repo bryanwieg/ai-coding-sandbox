@@ -36,9 +36,12 @@ A session is a set of Compose services, all from the sandbox's images:
   policy), `ssh-unlock` (loads SSH keys), and `*-state-init` (prepares
   volumes before each start).
 
-The proxy and the daemon belong to the project: several sessions of either
-agent in the same project share them, and each stops shortly after the last
-session ends.
+Sessions of either agent in the same project share the proxy and any
+enabled Docker, publish and SSH services. Two seconds after the last agent
+container exits, the proxy starts shutdown and gives the other services up
+to 25 seconds to finish cleanup. A proxy that has never had an agent session
+allows two minutes for startup or SSH unlock. If a launch reaches a project
+already shutting down, retry once the services have stopped.
 
 ### Volumes
 
@@ -307,9 +310,10 @@ project.
   `.sandbox/ssh/config`.
 - The host's optional `sandbox` command approves the egress policy, reloads
   a running proxy whose policy is out of date, and unlocks SSH keys before
-  launching an agent, reusing already-unlocked keys. Direct Compose launches
-  require these steps manually. Neither workflow lets the agent approve
-  policy changes or load keys itself. To allow a blocked destination
+  launching an agent, reusing keys within the same session group. Shutdown
+  discards the unlocked keys. Direct Compose launches require these steps
+  manually, including a fresh unlock before the next group. Neither workflow
+  lets the agent approve policy changes or load keys itself. To allow a blocked destination
   mid-session, ask the user to add it to `.sandbox/egress-policy.yaml` and
   run `sandbox-trust` on the host; the running proxy then reloads with it,
   with no restart of the session.

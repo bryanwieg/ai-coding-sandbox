@@ -24,8 +24,16 @@ which pins every image by digest. These services make up a session:
 | `ssh-agent`, `ssh-unlock` | `ssh` | Serve SSH keys without exposing them |
 | `trust`, `migrate-*-state` | `tools` | Approve the egress policy; copy old state |
 
-The proxy, daemon and forwarder belong to the project's Compose project and
-stop on their own a few seconds after the last session ends.
+The proxy, Docker daemon, forwarder and SSH agent are shared by the sessions
+in a Compose project. After the last agent container exits, the proxy waits
+two seconds for another agent to join and then starts shutdown. The sidecars
+finish their own cleanup before the proxy exits, with a 25-second limit on
+the wait. If no session joins a new proxy, it starts shutdown after two
+minutes to cover startup and standalone SSH unlock.
+
+If a session starts while the previous group is shutting down, its startup
+can report that the project lifecycle is unavailable. Retry once the
+project services have stopped.
 
 ## Set up a machine
 
@@ -105,9 +113,7 @@ project's proxy is already running with a different policy, `sandbox` reloads
 it in place before launching; running sessions keep their open connections.
 A proxy from an older image, which cannot reload, is restarted instead, and
 the open connections of other sessions (an SSH login, a streaming request)
-drop once. Just before launching, `sandbox` also holds a running proxy and
-daemon up for 30 seconds, so neither stops between the previous session
-ending and the new one connecting.
+drop once.
 
 These preparation steps belong to the optional shell function. Direct
 `docker compose` launches still require manual `trust` and `ssh-unlock`.
@@ -521,17 +527,17 @@ privileged containers) are unchanged. The agent's Docker client then sets no
 proxy for containers, since the proxy would only refuse destinations their
 route allows.
 
-The daemon starts empty and stops once no session holds a connection: each
-session keeps a background lease (`sandbox-docker-lease`), and the daemon
-stops after 10 idle seconds, or 120 seconds after starting if no session
-connects. With ephemeral data, it gives running containers 2 seconds to stop
-(`SANDBOX_DOCKER_STOP_TIMEOUT`) instead of Docker's 15, since their data is
-wiped next. Idle means no connection open and none made, checked every second,
-so even a session lasting a moment counts. Until a session connects, a
-starting daemon holds a connection to the proxy, which keeps the proxy up
-while a launch waits for the daemon. Its images, containers, volumes, build cache, logins and
-certificates are then gone; to keep the images, containers, volumes and build
-cache, see [Keeping Docker data](#keeping-docker-data).
+The daemon starts empty and receives a shutdown notice after the final agent
+lease ends. The proxy counts leases through a project-local Unix socket
+available only to agent containers and the proxy. The daemon gets a separate
+read-only mount for shutdown notices. Docker workloads, API connections and
+proxy traffic cannot extend the lifetime of a session group.
+
+With ephemeral data, the daemon gives running containers 2 seconds to stop
+(`SANDBOX_DOCKER_STOP_TIMEOUT`) instead of Docker's 15. Its images,
+containers, volumes, build cache, logins and certificates are then gone.
+To keep the images, containers, volumes and build cache, see
+[Keeping Docker data](#keeping-docker-data).
 
 ### Keeping Docker data
 
@@ -594,7 +600,8 @@ outside the project and every reference folder, in `~/.config/ai-coding-sandbox/
 anyone who can read a private key file can use it. A session refuses to
 start when the key folder is inside the project or reference folder. The
 `sandbox` shell command unlocks keys automatically when none are loaded.
-For direct Compose launches, load them once per `SANDBOX_SSH_KEY_LIFETIME`:
+For direct Compose launches, load them before starting a new session group
+and again if they expire during that group.
 
 ```sh
 sandbox-unlock    # docker compose --env-file .sandbox/env run --rm ssh-unlock
@@ -604,9 +611,9 @@ sandbox-unlock    # docker compose --env-file .sandbox/env run --rm ssh-unlock
 for a passphrase only when a key requires one. It refuses keys readable by
 others. Only those two services mount the key folder, and neither has a
 network. Sessions get only the agent's socket (`SSH_AUTH_SOCK`), so they can
-authenticate with the keys but cannot read or copy them. The `ssh-agent`
-service runs until its keys expire, and a session warns when none are
-unlocked.
+authenticate with the keys but cannot read or copy them. The keys expire
+after `SANDBOX_SSH_KEY_LIFETIME` and are discarded during shutdown after
+the last agent container exits. A session warns when no keys are unlocked.
 
 `ssh host` then works for names in the project policy's `ssh` list, through
 the proxy. Put `User` and other client settings in `.sandbox/ssh/config` and

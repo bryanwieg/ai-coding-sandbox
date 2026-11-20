@@ -5,8 +5,8 @@
 # inside: identity and capabilities, read-only mounts, egress only through the
 # proxy's allowlist, the session daemon's isolation, its opt-in direct egress
 # (containers route out directly while the agent still cannot), project bind
-# mounts and a published port reaching the host, and the daemon, forwarder and proxy
-# stopping once the session ends. Runs locally; GitHub's runners cannot
+# mounts and a published port reaching the host, and shared services stopping
+# after the last agent exits. Runs locally; GitHub's runners cannot
 # start the daemon, so CI passes --no-docker, which audits sessions without
 # the docker and publish profiles. Run it after changing networks, mounts,
 # privileges or the proxy.
@@ -47,6 +47,7 @@ export COMPOSE_PATH_SEPARATOR COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES
 port=$SANDBOX_PUBLISH_PORTS
 
 cleanup() {
+    docker rm -f "$project_name-anchor" "$project_name-first" "$project_name-last" >/dev/null 2>&1 || true
     (cd "$project" 2>/dev/null && docker compose --env-file .sandbox/env --profile '*' \
         down --volumes --remove-orphans >/dev/null 2>&1) || true
     for volume in claude-state codex-state trust; do
@@ -95,11 +96,51 @@ session() {
         -e AUDIT_UID -e AUDIT_PORT -e AUDIT_BUSYBOX -e AUDIT_PROJECT "$1" sh -ceu "$2"
 }
 
-# Build every image before the first session. A build between sessions can
-# outlast the services' idle window, so the proxy would stop while the next
-# launch starts.
+wait_for_services_to_stop() (
+    attempts=$1
+    shift
+    while [ "$attempts" -gt 0 ]; do
+        running=$(docker compose --env-file .sandbox/env ps --status running --quiet "$@") || return 1
+        [ -n "$running" ] || return 0
+        attempts=$((attempts - 1))
+        sleep 1
+    done
+    docker compose --env-file .sandbox/env ps --all "$@" >&2
+    docker compose --env-file .sandbox/env logs --tail 20 "$@" >&2
+    return 1
+)
+
+start_holder() (
+    role=$1
+    service=$2
+    container=$project_name-$role
+    docker compose --env-file .sandbox/env run --pull never -d -T --name "$container" \
+        "$service" python3 -c '
+import os
+import sys
+
+os.closerange(3, 65536)
+os.execl("/bin/sh", "sh", "-ceu", """
+    touch "$1.ready"
+    while [ ! -f "$1.release" ]; do sleep 0.2; done
+""", "audit-holder", sys.argv[1])
+' "lifecycle-$role" >/dev/null || return 1
+    for _ in $(seq 10); do
+        [ ! -f "lifecycle-$role.ready" ] || return 0
+        sleep 1
+    done
+    docker logs "$container" >&2
+    return 1
+)
+
+# Prebuild all images so Compose can reuse them during the audit sessions.
 # shellcheck disable=SC2086
-docker compose --env-file .sandbox/env build --quiet claude claude-state-init codex codex-state-init $session_services
+docker compose --env-file .sandbox/env --profile ssh build --quiet claude claude-state-init codex codex-state-init \
+    ssh-agent ssh-unlock $session_services
+
+# Keep a lease across short audit invocations and profile changes so they
+# cannot race the idle shutdown boundary.
+start_holder anchor claude
 
 for agent in claude codex; do
     printf 'Auditing a %s session...\n' "$agent" >&2
@@ -317,24 +358,53 @@ if [ "$audit_docker" = true ]; then
     done
 fi
 
-# A session shorter than the proxy's idle check may go unseen, and the proxy
-# then stops only at the end of its 120-second start grace.
-stopped=false
-for _ in $(seq 150); do
-    # shellcheck disable=SC2086
-    if [ -z "$(docker compose --env-file .sandbox/env ps --quiet $session_services)" ]; then
-        stopped=true
-        break
-    fi
-    sleep 1
-done
-if [ "$stopped" = true ]; then
-    pass "the session services stop once the session ends: $session_services"
+touch lifecycle-anchor.release
+if [ "$(timeout 10 docker wait "$project_name-anchor")" = 0 ]; then
+    pass 'the final audit session exited normally'
 else
-    fail "a session service kept running after the session ended: $session_services"
-    docker compose --env-file .sandbox/env ps --all >&2
-    # shellcheck disable=SC2086
-    docker compose --env-file .sandbox/env logs --tail 20 $session_services >&2
+    fail 'the final audit session did not exit normally'
+fi
+# The Docker audit leaves workloads running. Allow time for their drain.
+shutdown_started=$(date +%s)
+# shellcheck disable=SC2086
+if wait_for_services_to_stop 30 $session_services; then
+    pass "services stopped after the final normal exit in $(($(date +%s) - shutdown_started))s"
+else
+    fail "a service kept running after the final normal exit: $session_services"
+    exit 1
+fi
+
+# Start a fresh session group with SSH, using only a disposable test key.
+COMPOSE_PROFILES=${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}ssh
+SANDBOX_SSH_KEY_DIR=$audit_dir/ssh-keys
+export SANDBOX_SSH_KEY_DIR
+mkdir -m 700 "$SANDBOX_SSH_KEY_DIR"
+ssh-keygen -q -t ed25519 -N '' -f "$SANDBOX_SSH_KEY_DIR/audit"
+docker compose --env-file .sandbox/env run --pull never --rm -T ssh-unlock
+start_holder first claude
+start_holder last codex
+touch lifecycle-first.release
+if [ "$(timeout 10 docker wait "$project_name-first")" != 0 ]; then
+    fail 'the first of two concurrent sessions did not exit normally'
+fi
+sleep 3
+running=$(docker compose --env-file .sandbox/env ps --status running --services)
+all_running=true
+for service in $session_services ssh-agent; do
+    printf '%s\n' "$running" | grep -Fxq "$service" || all_running=false
+done
+if [ "$all_running" = true ] &&
+    docker exec "$project_name-last" ssh-add -l >/dev/null; then
+    pass 'the second session keeps all shared services and its unlocked key available'
+else
+    fail 'a shared service or the unlocked key disappeared after only one session exited'
+fi
+docker kill --signal KILL "$project_name-last" >/dev/null
+# shellcheck disable=SC2086
+if wait_for_services_to_stop 15 $session_services ssh-agent; then
+    pass 'all shared services stopped within 15s after the final session was killed'
+else
+    fail 'a shared service kept running after the final session was killed'
 fi
 
 [ "$failures" -eq 0 ] || { echo "$failures check(s) failed." >&2; exit 1; }
