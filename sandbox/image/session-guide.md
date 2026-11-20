@@ -17,7 +17,11 @@ A session is a set of Compose services, all from the sandbox's images:
   `claude` and `codex`, are installed and signed in from their own state
   volumes, so either agent can run the other non-interactively (such as
   `codex exec` for a delegated task); `SANDBOX_AGENT` names the one this
-  session started.
+  session started. Codex's own sandbox (bubblewrap) cannot start in this
+  container, so Codex runs with `danger-full-access` and the container is
+  the boundary: the image sets that as Codex's default and as
+  `CODEX_BUILD_SANDBOX`; do not pass `--sandbox read-only` or
+  `workspace-write`, under which every command fails.
 - **`egress-proxy`**: the only service with an Internet uplink. Every request
   leaves through it, and it allows only the base policy plus the project's
   approved additions.

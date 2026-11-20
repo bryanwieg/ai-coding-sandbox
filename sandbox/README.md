@@ -322,7 +322,10 @@ Both agents run without their own bubblewrap sandboxes, which Docker's default
 seccomp profile blocks. The container's boundary replaces them. The image
 sets `CODEX_BUILD_SANDBOX=danger-full-access`, so a Codex that another agent
 runs as a builder (phased-delivery's `codex-build.sh`) does the same instead
-of failing to start its own sandbox.
+of failing to start its own sandbox. Codex's system configuration,
+`/etc/codex/config.toml` from `codex/config.toml`, makes `danger-full-access`
+the default for plain `codex exec` as well; the user's
+`~/.codex/config.toml`, `-c` and `--sandbox` still override it.
 
 ## Egress policy
 

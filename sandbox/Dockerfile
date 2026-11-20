@@ -287,7 +287,13 @@ RUN groupmod --gid "${AGENT_GID}" --new-name agent node \
     && awk -F: '{ used[$3] = 1 } END { for (id = 500; id <= 65533; id++) if (!(id in used)) printf "agent:x:%d:%d::/home/agent:/bin/bash\n", id, id }' \
         /etc/passwd >> /etc/passwd \
     && awk -F: '{ used[$3] = 1 } END { for (id = 500; id <= 65533; id++) if (!(id in used)) printf "agent:x:%d:\n", id }' \
-        /etc/group >> /etc/group
+        /etc/group >> /etc/group \
+    && install -d -m 0755 /etc/codex
+
+# Codex's system defaults, below the user's own configuration: plain
+# `codex exec` runs with danger-full-access too (codex/config.toml). The
+# folder is created above, since COPY --chmod would also apply to it.
+COPY --chmod=0644 codex/config.toml /etc/codex/config.toml
 
 ENV HOME=/home/agent
 USER agent

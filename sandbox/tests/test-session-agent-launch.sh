@@ -230,5 +230,41 @@ else
     fail "a Codex request outside a session was wrong (status $status)"
 fi
 
+# Codex's bubblewrap sandbox cannot start in the container, so the image
+# makes danger-full-access the default for every Codex run, through the
+# builder variable and the system config, which the user's config and flags
+# still override. codex exec reports its sandbox before calling the model,
+# so this runs offline. The system config is an undocumented layer: this
+# fails if a Codex update stops reading it.
+if [ "$(docker run --rm --entrypoint printenv "$image" CODEX_BUILD_SANDBOX)" = danger-full-access ]; then
+    pass 'the image sets CODEX_BUILD_SANDBOX=danger-full-access'
+else
+    fail 'CODEX_BUILD_SANDBOX is not danger-full-access'
+fi
+mkdir -p "$test_dir/codex-user"
+printf 'sandbox_mode = "read-only"\n' > "$test_dir/codex-user/config.toml"
+# codex_sandbox USER_CONFIG [codex exec options...]: the sandbox codex exec reports.
+codex_sandbox() {
+    user_config=$1
+    shift
+    # shellcheck disable=SC2016
+    docker run --rm --network none --read-only --tmpfs /tmp:mode=1777 --user "$(id -u):$(id -g)" -w /tmp \
+        -v "$test_dir/codex-user:/seed:ro" -e USER_CONFIG="$user_config" --entrypoint sh "$image" -c '
+            mkdir -p /tmp/codex
+            [ "$USER_CONFIG" = no ] || cp /seed/config.toml /tmp/codex/
+            CODEX_HOME=/tmp/codex timeout 30 codex exec --skip-git-repo-check "$@" hello </dev/null 2>&1 |
+                sed -n "s/^sandbox: \([a-z-]*\).*/\1/p" | head -n 1' sh "$@"
+}
+if [ "$(codex_sandbox no)" = danger-full-access ]; then
+    pass 'plain codex exec defaults to danger-full-access'
+else
+    fail "plain codex exec sandbox: $(codex_sandbox no)"
+fi
+if [ "$(codex_sandbox yes)" = read-only ] && [ "$(codex_sandbox no --sandbox workspace-write)" = workspace-write ]; then
+    pass "the user's Codex config and --sandbox still override the default"
+else
+    fail "Codex overrides: config=$(codex_sandbox yes) flag=$(codex_sandbox no --sandbox workspace-write)"
+fi
+
 [ "$failures" -eq 0 ] || { echo "$failures check(s) failed." >&2; exit 1; }
 echo 'Session agent launch checks passed.'
