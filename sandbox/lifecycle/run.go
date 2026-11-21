@@ -147,14 +147,61 @@ func startAndReap(argv []string, service bool, started chan<- int, exited chan<-
 // run joins the broker before starting argv and returns the wrapper exit code.
 // It handles signals for the member's role. Tests cancel ctx to request a stop.
 func run(ctx context.Context, cfg runConfig, m member, name string, argv []string) int {
-	signals := make(chan os.Signal, 8)
-	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
-	if m.role == roleAgent {
-		signal.Notify(signals, syscall.SIGQUIT, syscall.SIGTSTP)
-	}
-	defer signal.Stop(signals)
+	return runWithStart(ctx, cfg, m, name, argv, startAndReap)
+}
 
-	conn, reply := joinBroker(ctx, cfg, name, cfg.retry)
+func runWithStart(ctx context.Context, cfg runConfig, m member, name string, argv []string,
+	start func([]string, bool, chan<- int, chan<- childExit)) int {
+	service := m.role == roleService
+	stops := make(chan os.Signal, 8)
+	otherSignals := make(chan os.Signal, 8)
+	if service {
+		signal.Notify(stops, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	} else {
+		signal.Notify(stops, syscall.SIGTERM)
+		signal.Notify(otherSignals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTSTP)
+		defer signal.Stop(otherSignals)
+	}
+	defer signal.Stop(stops)
+
+	watchCtx, leave := context.WithCancel(context.Background())
+	admission := make(chan byte, 1)
+	brokerStop := make(chan bool, 1)
+	left := make(chan struct{})
+	go func() {
+		defer close(left)
+		conn, reply := joinBroker(watchCtx, cfg, name, cfg.retry)
+		admission <- reply
+		if reply == msgAdmit {
+			watchBroker(watchCtx, cfg, name, conn, brokerStop)
+		}
+	}()
+	defer func() {
+		leave()
+		<-left
+	}()
+
+	// A stop during admission has no child to signal.
+	beforeStart := 128 + int(syscall.SIGTERM)
+	if service {
+		beforeStart = 0
+	}
+	var reply byte
+	select {
+	case <-stops:
+		return beforeStart
+	case <-ctx.Done():
+		return beforeStart
+	case reply = <-admission:
+	}
+	// Both admission and a stop may already be queued.
+	select {
+	case <-stops:
+		return beforeStart
+	case <-ctx.Done():
+		return beforeStart
+	default:
+	}
 	if reply == msgRefuse {
 		fmt.Fprintln(os.Stderr, "sandbox-lifecycle: the session group is stopping; start the session again.")
 		return exitRefused
@@ -166,36 +213,24 @@ func run(ctx context.Context, cfg runConfig, m member, name string, argv []strin
 
 	started := make(chan int)
 	exited := make(chan childExit, 1)
-	go startAndReap(argv, m.role == roleService, started, exited)
-	pid := <-started
-	if pid == 0 {
-		conn.Close()
-		return 127
-	}
-	watchCtx, leave := context.WithCancel(context.Background())
-	brokerStop := make(chan bool, 1)
-	left := make(chan struct{})
-	go func() {
-		defer close(left)
-		watchBroker(watchCtx, cfg, name, conn, brokerStop)
-	}()
-	defer func() {
-		leave()
-		<-left
-	}()
-
-	killTarget := pid
-	if m.role == roleService {
-		killTarget = -pid
-	}
+	go start(argv, service, started, exited)
+	var pid, killTarget, pendingTerms int
+	var childSignals <-chan os.Signal
 	var grace, hard <-chan time.Time
 	var hardTimer *time.Timer
 	requested, lost := false, false
-	requestStop := func() {
+	requestStop := func(forwardAgain bool) {
+		if requested && !forwardAgain {
+			return
+		}
 		if !requested {
 			requested = true
 			grace = time.After(m.grace)
 			hardTimer = time.NewTimer(m.grace + cfg.hardExit)
+		}
+		if pid == 0 {
+			pendingTerms++
+		} else {
 			cfg.signal(pid, syscall.SIGTERM)
 		}
 	}
@@ -204,24 +239,42 @@ func run(ctx context.Context, cfg runConfig, m member, name string, argv []strin
 supervise:
 	for {
 		select {
+		case pid = <-started:
+			if pid == 0 {
+				return 127
+			}
+			killTarget = pid
+			if service {
+				killTarget = -pid
+			}
+			childSignals = otherSignals
+			for range pendingTerms {
+				cfg.signal(pid, syscall.SIGTERM)
+			}
+			if hard != nil {
+				// The grace expired before the child's PID was available.
+				cfg.signal(killTarget, syscall.SIGKILL)
+			}
 		case result = <-exited:
 			break supervise
 		case <-cancelled:
 			cancelled = nil
-			requestStop()
+			requestStop(false)
 		case lost = <-brokerStop:
 			if lost {
 				fmt.Fprintln(os.Stderr, "sandbox-lifecycle: lost the lifecycle broker")
 			}
-			requestStop()
-		case sig := <-signals:
-			if m.role == roleService || sig == syscall.SIGTERM {
-				requestStop()
-			} else if sig == syscall.SIGHUP {
+			requestStop(false)
+		case <-stops:
+			requestStop(!service)
+		case sig := <-childSignals:
+			if sig == syscall.SIGHUP {
 				cfg.signal(pid, syscall.SIGHUP)
 			}
 		case <-grace:
-			cfg.signal(killTarget, syscall.SIGKILL)
+			if pid != 0 {
+				cfg.signal(killTarget, syscall.SIGKILL)
+			}
 			hard = hardTimer.C
 		case <-hard:
 			select {

@@ -47,6 +47,15 @@ func TestHelperWrapper(t *testing.T) {
 			return nil
 		}
 	}
+	if os.Getenv("LIFECYCLE_TEST_STALL_START") == "1" {
+		stall := func([]string, bool, chan<- int, chan<- childExit) {
+			if err := os.WriteFile("starting", []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
+				panic(err)
+			}
+			select {}
+		}
+		os.Exit(runWithStart(context.Background(), cfg, m, name, os.Args[4:], stall))
+	}
 	os.Exit(run(context.Background(), cfg, m, name, os.Args[4:]))
 }
 
@@ -205,6 +214,69 @@ func TestWrapperRefusal(t *testing.T) {
 	}
 }
 
+func TestStopDuringAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code int
+	}{
+		{"publish", 0},
+		{"codex", 128 + int(syscall.SIGTERM)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			l := listenForWrapper(t, dir)
+			cmd := wrapperCommand(t, dir, tc.name, "touch", "ran")
+			startWrapper(t, cmd)
+			c := acceptWrapper(t, l, tc.name)
+			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+				t.Fatal(err)
+			}
+			wrapperExit(t, cmd, tc.code)
+			requireLeave(t, c)
+			if _, err := os.Stat(filepath.Join(dir, "ran")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("checking child marker: %v", err)
+			}
+		})
+	}
+}
+
+func TestBrokerStopDuringChildStart(t *testing.T) {
+	for _, reason := range []string{"stop", "lost"} {
+		t.Run(reason, func(t *testing.T) {
+			dir := t.TempDir()
+			l := listenForWrapper(t, dir)
+			cmd := wrapperCommand(t, dir, "publish", "true")
+			cmd.Env = append(cmd.Env, "LIFECYCLE_TEST_STALL_START=1", "LIFECYCLE_TEST_NO_KILL=1")
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			startWrapper(t, cmd)
+			c := acceptWrapper(t, l, "publish")
+			sendWrapper(t, c, msgAdmit)
+			childPID(t, dir, "starting")
+
+			cfg := wrapperTestConfig("")
+			limit := testGrace + cfg.hardExit
+			want := "sandbox-lifecycle: publish did not stop in time; forcing exit.\n"
+			start := time.Now()
+			if reason == "lost" {
+				l.Close()
+				c.Close()
+				limit += cfg.rejoin
+				want = "sandbox-lifecycle: lost the lifecycle broker\n" + want
+			} else {
+				sendWrapper(t, c, msgStop)
+			}
+			wrapperExit(t, cmd, 1)
+			if elapsed := time.Since(start); elapsed < limit || elapsed > limit+500*time.Millisecond {
+				t.Fatalf("hard exit during start after %s, expected %s", elapsed, limit)
+			}
+			if got := stderr.String(); got != want {
+				t.Fatalf("stderr = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestServiceStop(t *testing.T) {
 	dir := t.TempDir()
 	l := listenForWrapper(t, dir)
@@ -328,7 +400,12 @@ func TestWrapperRejoin(t *testing.T) {
 func TestAgentSignals(t *testing.T) {
 	dir := t.TempDir()
 	l := listenForWrapper(t, dir)
-	cmd := wrapperCommand(t, dir, "codex", "sh", "-c", "trap 'exit 9' TERM; trap 'echo $$ > hup' HUP; echo $$ > ready; while :; do sleep 0.02; done")
+	cmd := wrapperCommand(t, dir, "codex", "sh", "-c", `
+		trap 'trap "exit 9" TERM; echo $$ > term' TERM
+		trap 'echo $$ > hup' HUP
+		echo $$ > ready
+		while :; do sleep 0.02; done
+	`)
 	startWrapper(t, cmd)
 	c := acceptWrapper(t, l, "codex")
 	sendWrapper(t, c, msgAdmit)
@@ -340,6 +417,12 @@ func TestAgentSignals(t *testing.T) {
 	}
 	if childPID(t, dir, "hup") != pid {
 		t.Fatal("HUP did not reach original child")
+	}
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if childPID(t, dir, "term") != pid {
+		t.Fatal("first TERM did not reach original child")
 	}
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
