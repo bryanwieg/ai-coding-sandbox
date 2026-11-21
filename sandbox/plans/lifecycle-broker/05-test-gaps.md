@@ -67,12 +67,21 @@ Work:
    the container exits within 12 s (5 s grace + 2 s hard exit + margin).
    Check name: `a detached process does not keep the proxy container
    alive`.
-2. State test: an agent container (`SANDBOX_SESSION=1`, a held broker's
-   `agents` mount) whose command starts `setsid sh -c 'trap "" TERM; exec
-   sleep 600' &` and then `exec sleep 600`; drain the broker; the
-   container exits within 17 s (10 s grace + 2 s + margin). Check name:
-   `a detached process does not keep the agent container alive`.
-3. Each case measures the time from the drain request to `docker wait`
+2. State test: an agent container started as production starts it:
+   `docker run --init` (tini as PID 1, the wrapper its only child), the
+   image's normal entrypoint, `SANDBOX_SESSION=1`, and its own fresh
+   broker's `agents` mount (not the held broker, which already lists a
+   `claude` member). Its command: `setsid sh -c 'trap "" TERM; echo $$ >
+   /tmp/detached.pid; exec sleep 601' & exec sleep 600`. Before draining,
+   wait until `/tmp/detached.pid` exists and that PID is alive (`docker
+   exec … kill -0`), and until the broker's `status` lists `claude`. Drain;
+   the container exits within 17 s (10 s grace + 2 s + margin) with
+   `docker wait` status 143 (the foreground `sleep` ended by SIGTERM).
+   Check name: `a detached process does not keep the agent container
+   alive`.
+3. The proxy case likewise waits for its detached PID (written the same
+   way) to be alive before draining, and checks exit status 0.
+4. Each case measures the time from the drain request to `docker wait`
    returning and prints it in the pass line.
 
 External inputs: none.
@@ -84,8 +93,9 @@ Done when:
 
 Out of scope: production code; other test files.
 
-Model basis: J1 F1 R1 C1 K1 P0 V1 S0 = 6 -> top (process-group and
-PID-namespace semantics; timing).
+Model basis: J1 F0 R1 C1 K2 P0 V1 S0 = 6 -> top by override (container
+isolation and asynchronous shutdown: PID-namespace teardown under tini and
+as PID 1).
 
 ## 05.2 Audit: real host functions, startup-window reset, broker recreation
 
@@ -101,10 +111,13 @@ functions (04.1): `sandbox-status`, `sandbox-stop`, the orphan watcher
 `_sandbox_stop_client`). Broker: in `starting`, a services-socket join
 moves the deadline to `now + 120 s` (01.2).
 
-Contracts: none new. The audit sources `sandbox/shell/sandbox.sh` in a
-subshell with the audit's project environment exported
-(`COMPOSE_PROJECT_NAME`, `COMPOSE_FILE`, and the rest already exported at
-line ~46) and runs it from the audit project's folder.
+Contracts: none new. The audit is `/bin/sh` and `sandbox.sh` needs Bash
+or Zsh, so every host-function call runs in an explicit `bash -c '.
+"$sandbox_dir/shell/sandbox.sh"; …'` process started from the audit
+project's folder, with the audit's environment already exported (line ~46).
+Direct `docker compose up` and `run` calls in these checks pass `--pull
+never` (the images are prebuilt; the dev overlay's `pull_policy: build`
+must not rebuild during a timed check).
 
 Files:
 - `sandbox/bin/audit-sandbox`
@@ -114,29 +127,38 @@ sessions` check and before the daemon section; all run in both modes;
 each starts on a group the previous check has left stopped, using
 `session()`'s wait):
 1. Host functions against real containers: start a background session
-   (sleep 60); `sandbox-status` (sourced) prints `agents=claude`; check
-   `host sandbox-status lists the session`. Then `sandbox-stop`; within
-   40 s no container of the audit project runs (`docker ps -q --filter
-   label=com.docker.compose.project=$project_name`); check `host
-   sandbox-stop ends the group`.
-2. Orphan watcher: in a background subshell, source `sandbox.sh` and launch
-   a claude session through the host's launch path with the command
-   `sleep 300` (the same function `sandbox` uses for an agent with a
-   command); once the labeled container runs, SIGKILL that subshell (not
-   the audit's shell); within 30 s the labeled container is gone; check
-   `host watcher stops an orphaned launch`. If the launch path needs a
-   terminal, give the subshell `< /dev/null` the way the audit's
-   `session()` does; do not add an option to `sandbox.sh`.
-3. Startup-window reset: `docker compose … up -d lifecycle egress-proxy`
-   (no agent), wait 100 s, `docker compose … restart --no-deps
-   egress-proxy` (a fresh services-socket join), wait 30 s more (130 s
-   after the broker started, past the original window), then run a short
-   `session()`; it succeeds, and `status` showed `state=starting` just
-   before it; check `a helper join extends the startup window`.
-4. Broker recreation: with a background session (sleep 60) joined,
-   `docker compose … up -d --no-deps --force-recreate lifecycle`; within
-   30 s `status` lists the agent again and the session is still running;
-   check `broker recreation keeps sessions`.
+   (sleep 60) and, alongside it, create and leave stopped one disposable
+   one-off (`docker compose … run -d --pull never claude true`, waited
+   for); `bash` running `sandbox-status` prints `agents=claude`; check
+   `host sandbox-status lists the session`. Then `bash` running
+   `sandbox-stop` exits 0, and within 40 s `docker ps -aq --filter
+   label=com.docker.compose.project=$project_name` prints nothing (no
+   running or stopped container is left); check `host sandbox-stop ends
+   and removes the group`.
+2. Orphan watcher, arranged as `test-shell-functions.sh`'s watcher test
+   (~309) arranges it: start `bash -c '. …/sandbox.sh; sandbox claude
+   sleep 300' < /dev/null &` and record that launcher's PID; wait until a
+   container with this project's label and an `ai-coding-sandbox.client`
+   label runs; `kill -KILL` that launcher PID and reap it (`wait`); within
+   30 s that container is gone; check `host watcher stops an orphaned
+   launch`. If the host launch needs a terminal and cannot run this way,
+   stop and report it; do not add an option to `sandbox.sh`.
+3. Startup-window reset: `docker compose … up -d --pull never lifecycle
+   egress-proxy` (no agent); record the broker's container ID; read
+   `remaining` from `status` at about 10 s and at about 100 s (it
+   decreases); `docker compose … restart --no-deps egress-proxy` (a fresh
+   services-socket join); `remaining` then reads at least 110; wait until
+   130 s after the broker started (past its original window), confirm the
+   broker's container ID is unchanged and `state=starting`, then run a
+   short `session()` and confirm the same broker container admitted it
+   (its ID is unchanged afterwards and its `status` lists the agent while
+   the session runs); check `a helper join extends the startup window`.
+4. Broker recreation: with a background session (sleep 60) joined, record
+   the broker's container ID and the agent's container ID; `docker compose
+   … up -d --no-deps --force-recreate --pull never lifecycle`; within 30 s
+   the broker's container ID differs, its `status` lists the agent, and
+   the same agent container is still running; check `broker recreation
+   keeps sessions`.
 5. Every new check leaves no container of the audit project running when
    it finishes (stop with `sandbox-stop` or the explicit stop).
 
@@ -151,10 +173,17 @@ Done when:
 Out of scope: `sandbox/shell/sandbox.sh` and every production file; if a
 check shows a production bug, stop and report it instead of fixing it.
 
-Model basis: J1 F0 R1 C1 K1 P0 V1 S1 = 6 -> top (real-Docker timing,
-backgrounded host shell functions).
+Model basis: J1 F0 R1 C1 K1 P1 V1 S1 = 7 -> top (P1: adapting the
+stubbed watcher test to a real Compose launch; real-Docker timing).
 
 ## Notes
 - Plan start (phase 05): 90dac50
 - 2026-11-21 (user): "close the test gaps next", after PR #12 passed CI.
   Stages go to Codex, as before; the orchestrator runs Docker checks.
+- 2026-11-21 (plan review round 1, Codex gpt-6.2-astra high): host calls
+  run in explicit bash processes; the watcher check kills the launcher's
+  own PID; the agent case runs under `--init` on a fresh broker and waits
+  for the detached PID before draining, checking status 143; the reset and
+  recreation checks track container IDs; the stop check requires no
+  container at all, including a stopped one-off; `--pull never` on direct
+  Compose calls; model bases re-scored.
