@@ -7,7 +7,9 @@
 # and launches wait for stopping groups and clean up orphaned sessions;
 # an agent session ends by removing only the released images nothing uses;
 # and at a Git repository's root without .sandbox/env, sandbox initializes
-# and stages it before launching, but nowhere else.
+# and stages it before launching, but nowhere else; and an agent launch from
+# an installed copy updates it from its recorded source, loads a newer
+# installed copy and reruns, while a failed check or a bad download keeps it.
 set -eu
 
 root_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -464,6 +466,127 @@ services=docker' ]
         "run --rm --pull=always "*" local-init:test sandbox-init-config --force ") ;;
         *) echo "sandbox-init override in $shell: $output" >&2; exit 1 ;;
     esac
+
+    # An installed copy, which has a source-url record next to it, updates
+    # itself from that URL on an agent launch and loads the result.
+    installed=$test_dir/installed-$shell
+    install_copy() {
+        rm -rf "$installed"
+        mkdir "$installed"
+        cp "$root_dir/shell/sandbox.sh" "$installed/sandbox.sh"
+        printf '%s\n' "$1" > "$installed/source-url"
+    }
+    run_installed() {
+        (cd "$1" && PATH="$test_dir/bin:$PATH" "$shell" -c ". \"$installed/sandbox.sh\"; $2")
+    }
+    # The installed copy holds FILE, and no temp file is left next to it.
+    check_copy() {
+        cmp -s "$installed/sandbox.sh" "$1"
+        [ "$(ls -A "$installed")" = "$(printf 'sandbox.sh\nsource-url')" ]
+    }
+    current=$root_dir/shell/sandbox.sh
+    changed=$test_dir/upstream-changed.sh
+    awk '{ print }
+        $0 == "sandbox() {" {
+            print "    echo updated-launcher >&2"
+            print "    echo updated-launcher >> \"$SANDBOX_TEST_LOG\""
+        }' "$current" > "$changed"
+    grep -Fxq '    echo updated-launcher >&2' "$changed"
+    plain="${trust}${launch}${agent}claude "
+    updated="sandbox: updated the shell functions from file://$changed and loaded them into this shell."
+    reloaded='sandbox: loaded the shell functions updated since this shell started.'
+    unchecked='sandbox: could not check for shell function updates; continuing with the installed copy.'
+
+    # The first launch updates, then reruns with the new definitions before
+    # it pulls images; the second finds nothing to update.
+    install_copy "file://$changed"
+    : > "$log"
+    run_installed "$test_dir/project" 'sandbox && sandbox' > "$test_dir/output" 2>"$test_dir/err"
+    [ "$(tr '\n' ' ' < "$test_dir/output")" = "$plain$plain" ]
+    [ "$(grep -Fxc "$updated" "$test_dir/err")" = 1 ]
+    [ "$(grep -Fxc updated-launcher "$test_dir/err")" = 2 ]
+    check_copy "$changed"
+    [ "$(grep -nFx updated-launcher "$log" | head -n 1 | cut -d: -f1)" -lt "$(grep -nF 'pull --quiet --policy missing' "$log" | head -n 1 | cut -d: -f1)" ]
+
+    install_copy "file://$changed"
+    run_installed "$test_dir/project" 'sandbox codex' > "$test_dir/output" 2>"$test_dir/err"
+    [ "$(tr '\n' ' ' < "$test_dir/output")" = "${trust}${launch}${agent}codex " ]
+    [ "$(grep -Fxc updated-launcher "$test_dir/err")" = 1 ]
+    check_copy "$changed"
+
+    # The rerun keeps the launch's arguments.
+    install_copy "file://$changed"
+    [ "$(run_installed "$test_dir/project" 'sandbox claude bash' 2>/dev/null | tr '\n' ' ')" = "${trust}${launch}${agent}claude bash " ]
+    check_copy "$changed"
+
+    # The update comes before the .sandbox/env check.
+    install_copy "file://$changed"
+    if run_installed "$test_dir/empty" "HOME='$test_dir/empty' sandbox" >/dev/null 2>"$test_dir/err"; then exit 1; fi
+    grep -Fq 'no .sandbox/env here' "$test_dir/err"
+    grep -Fxq "$updated" "$test_dir/err"
+    check_copy "$changed"
+
+    install_copy "file://$current"
+    run_installed "$test_dir/project" sandbox > "$test_dir/output" 2>"$test_dir/err"
+    [ "$(tr '\n' ' ' < "$test_dir/output")" = "$plain" ]
+    if grep -q '^sandbox:' "$test_dir/err"; then exit 1; fi
+    check_copy "$current"
+
+    # A copy another terminal or install.sh replaced after this shell loaded
+    # it is loaded too, even when the check itself fails.
+    outdated="cp '$changed' '$installed/sandbox.sh'"
+    install_copy "file://$current"
+    run_installed "$test_dir/project" "$outdated; printf '%s\n' 'file://$changed' > '$installed/source-url'; sandbox" > "$test_dir/output" 2>"$test_dir/err"
+    [ "$(tr '\n' ' ' < "$test_dir/output")" = "$plain" ]
+    [ "$(grep -Fxc "$reloaded" "$test_dir/err")" = 1 ]
+    [ "$(grep -Fxc updated-launcher "$test_dir/err")" = 1 ]
+    if grep -Fq 'updated the shell functions from' "$test_dir/err"; then exit 1; fi
+    check_copy "$changed"
+
+    install_copy "file://$test_dir/missing"
+    run_installed "$test_dir/project" sandbox > "$test_dir/output" 2>"$test_dir/err"
+    [ "$(tr '\n' ' ' < "$test_dir/output")" = "$plain" ]
+    [ "$(cat "$test_dir/err")" = "$unchecked" ]
+    check_copy "$current"
+
+    install_copy "file://$test_dir/missing"
+    run_installed "$test_dir/project" "$outdated; sandbox" > "$test_dir/output" 2>"$test_dir/err"
+    [ "$(tr '\n' ' ' < "$test_dir/output")" = "$plain" ]
+    [ "$(grep -Fx -e "$unchecked" -e "$reloaded" "$test_dir/err")" = "$unchecked
+$reloaded" ]
+    [ "$(grep -Fxc updated-launcher "$test_dir/err")" = 1 ]
+    check_copy "$changed"
+
+    # A download that is not these functions, or does not parse, never
+    # replaces the installed copy.
+    printf 'echo not the functions\n' > "$test_dir/upstream-wrong.sh"
+    { cat "$current"; echo 'fi'; } > "$test_dir/upstream-unparsable.sh"
+    for bad in wrong unparsable; do
+        install_copy "file://$test_dir/upstream-$bad.sh"
+        run_installed "$test_dir/project" sandbox > "$test_dir/output" 2>"$test_dir/err"
+        [ "$(tr '\n' ' ' < "$test_dir/output")" = "$plain" ]
+        [ "$(cat "$test_dir/err")" = "sandbox: file://$test_dir/upstream-$bad.sh is not valid sandbox shell functions; keeping the installed copy." ]
+        check_copy "$current"
+    done
+
+    # Only agent launches check.
+    install_copy "file://$changed"
+    for command in 'sandbox trust' 'sandbox --help'; do
+        run_installed "$test_dir/project" "$command" >/dev/null 2>"$test_dir/err"
+        if grep -q '^sandbox:' "$test_dir/err"; then exit 1; fi
+        check_copy "$current"
+    done
+
+    # A checkout copy has no record: it never updates and requests nothing.
+    mkdir -p "$test_dir/curl-bin"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$test_dir/curl-log" > "$test_dir/curl-bin/curl"
+    chmod 0755 "$test_dir/curl-bin/curl"
+    : > "$test_dir/curl-log"
+    (PATH="$test_dir/curl-bin:$PATH"; run "$test_dir/project" sandbox) > "$test_dir/output" 2>"$test_dir/err"
+    [ "$(tr '\n' ' ' < "$test_dir/output")" = "$plain" ]
+    if grep -q '^sandbox:' "$test_dir/err"; then exit 1; fi
+    [ ! -s "$test_dir/curl-log" ]
+    check_copy "$current"
 done
 
 echo 'Shell function tests passed.'

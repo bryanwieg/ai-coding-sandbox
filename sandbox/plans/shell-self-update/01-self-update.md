@@ -3,7 +3,7 @@
 Implement with the implement-in-phases skill; do not build from this file
 without it. Model tiers map to models in [models.md](models.md) and
 [models-codex.md](models-codex.md).
-Status: in progress (stages done: 01.1, 01.3)
+Status: in progress (stages done: 01.1, 01.2, 01.3)
 Before: `sandbox claude|codex` pulls the latest released images through the
 `oci://...-compose:latest` Compose file and `pull --policy missing`. The shell
 functions in `sandbox/shell/sandbox.sh` change only when the user reruns
@@ -112,7 +112,7 @@ From planning, 2026-11-21, after review round 1:
 | Stage | Goal | Tier | Order | Status |
 | --- | --- | --- | --- | --- |
 | 01.1 | Updater, in-shell reload and the installer's source record | top | first | done |
-| 01.2 | Regression tests in bash and zsh | middle+ | after 01.1, parallel with 01.3 | planned |
+| 01.2 | Regression tests in bash and zsh | middle+ | after 01.1, parallel with 01.3 | done |
 | 01.3 | Documentation and repository rules | middle+ | after 01.1, parallel with 01.2 | done |
 
 ## 01.1 Updater, in-shell reload and the installer's source record
