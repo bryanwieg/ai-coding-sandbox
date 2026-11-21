@@ -197,6 +197,23 @@ func TestWrapperLateListener(t *testing.T) {
 	requireLeave(t, c)
 }
 
+func TestWrapperScriptWithoutShebang(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "project-script")
+	script := `[ "$#" -eq 2 ] && [ "$1" = "two words" ] && [ -z "$2" ] && exit 7
+exit 1
+`
+	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	l := listenForWrapper(t, dir)
+	cmd := wrapperCommand(t, dir, "codex", "project-script", "two words", "")
+	cmd.Env = append(cmd.Env, "PATH="+dir)
+	startWrapper(t, cmd)
+	sendWrapper(t, acceptWrapper(t, l, "codex"), msgAdmit)
+	wrapperExit(t, cmd, 7)
+}
+
 func TestWrapperRefusal(t *testing.T) {
 	dir := t.TempDir()
 	l := listenForWrapper(t, dir)

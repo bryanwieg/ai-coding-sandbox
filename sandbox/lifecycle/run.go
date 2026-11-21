@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -119,11 +120,15 @@ func startAndReap(argv []string, service bool, started chan<- int, exited chan<-
 		started <- 0
 		return
 	}
-	child, err := os.StartProcess(path, argv, &os.ProcAttr{
+	attr := &os.ProcAttr{
 		Env:   os.Environ(),
 		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
 		Sys:   &syscall.SysProcAttr{Setpgid: service, Pdeathsig: syscall.SIGKILL},
-	})
+	}
+	child, err := os.StartProcess(path, argv, attr)
+	if errors.Is(err, syscall.ENOEXEC) {
+		child, err = os.StartProcess("/bin/sh", append([]string{"/bin/sh", path}, argv[1:]...), attr)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sandbox-lifecycle:", err)
 		started <- 0
