@@ -17,6 +17,7 @@ set -- agent="$(digest 1)" docker-daemon="$(digest 3)" \
     "$(grep -c '^[[:space:]]*image:' "$root_dir/compose.session.yaml")" ]
 grep -Fq "ai-coding-sandbox@$(digest 1)" "$test_dir/compose.yaml"
 grep -Fq "ai-coding-sandbox@$(digest 6)" "$test_dir/compose.yaml"
+grep -Fq "ai-coding-sandbox@$(digest 7)" "$test_dir/compose.yaml"
 (cd "$test_dir" && env SANDBOX_UID=1000 SANDBOX_GID=1000 SANDBOX_REFERENCE=/tmp \
     docker compose -f compose.yaml --profile claude --profile codex --profile docker \
     --profile publish --profile ssh --profile tools config --quiet)

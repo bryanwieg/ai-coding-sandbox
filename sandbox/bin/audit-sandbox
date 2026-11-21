@@ -89,6 +89,24 @@ AUDIT_BUSYBOX=$busybox
 AUDIT_PROJECT=/workspace/$project_name
 export AUDIT_UID AUDIT_PORT AUDIT_BUSYBOX AUDIT_PROJECT
 session() {
+    # Back-to-back sessions may change service settings. Let the previous
+    # group finish draining before Compose starts or recreates its services.
+    if group_status=$(docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status 2>/dev/null) &&
+        ! printf '%s\n' "$group_status" | grep -Fxq 'joinable=yes'; then
+        deadline=$(($(date +%s) + 40))
+        while :; do
+            # shellcheck disable=SC2086
+            running=$(docker compose --env-file .sandbox/env ps -q --status running lifecycle $session_services) || return 1
+            [ -n "$running" ] || break
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+                # shellcheck disable=SC2086
+                names=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' $running) || return 1
+                fail "session services still running after 40s: $names"
+                return 1
+            fi
+            sleep 1
+        done
+    fi
     # Images were built explicitly below. The dev overlay's pull_policy:
     # build would rebuild here, letting an idle proxy stop before launch.
     docker compose --env-file .sandbox/env run --pull never --rm -T \
@@ -99,7 +117,7 @@ session() {
 # outlast the services' idle window, so the proxy would stop while the next
 # launch starts.
 # shellcheck disable=SC2086
-docker compose --env-file .sandbox/env build --quiet claude claude-state-init codex codex-state-init $session_services
+docker compose --env-file .sandbox/env build --quiet claude claude-state-init codex codex-state-init lifecycle $session_services
 
 for agent in claude codex; do
     printf 'Auditing a %s session...\n' "$agent" >&2
