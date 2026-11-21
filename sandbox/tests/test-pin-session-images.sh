@@ -10,7 +10,7 @@ trap 'rm -rf "$test_dir"' EXIT HUP INT TERM
 
 digest() { printf 'sha256:%064d' "$1"; }
 set -- agent="$(digest 1)" docker-daemon="$(digest 3)" \
-    proxy="$(digest 4)" forwarder="$(digest 5)" ssh-agent="$(digest 6)"
+    proxy="$(digest 4)" forwarder="$(digest 5)" ssh-agent="$(digest 6)" lifecycle="$(digest 7)"
 
 "$pin" "$@" > "$test_dir/compose.yaml"
 [ "$(grep -c 'image: ghcr.io/bryanwieg/ai-coding-sandbox@sha256:' "$test_dir/compose.yaml")" -eq \

@@ -8,6 +8,13 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0.404-noble-amd64@sha256:a82c44c2efe00953d6
 # Go distribution under /usr/local/go reaches the agent images.
 FROM golang:1.27.4-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea AS go-upstream
 
+FROM go-upstream AS lifecycle-build
+COPY lifecycle/ /src/
+RUN cd /src \
+    && CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-mod=mod go build -trimpath -ldflags='-s -w' -o /out/sandbox-lifecycle . \
+    && install -d -m 0755 /out/run/sandbox-lifecycle/agents \
+        /out/run/sandbox-lifecycle/services /out/run/sandbox-lifecycle/daemon
+
 FROM python:3.15-slim-bookworm@sha256:96599df822d0e1c6bb700014a05c7f3c8cabc6e0f7ff3c4f9f69cee033b4b5d9 AS python-runtime
 
 # Keep independently updated dependencies out of each other's build cache.
@@ -74,6 +81,7 @@ RUN set -eu; \
 # world-writable, sticky data volume.
 ENV XDG_DATA_HOME=/home/rootless/.local/share/docker
 COPY --chmod=0755 image/sandbox-dockerd /usr/local/bin/sandbox-dockerd
+COPY --from=lifecycle-build --chmod=0755 /out/sandbox-lifecycle /usr/local/bin/sandbox-lifecycle
 ENTRYPOINT ["/usr/local/bin/sandbox-dockerd"]
 USER 1000
 
@@ -82,7 +90,15 @@ USER 1000
 FROM alpine/socat:1.8.1.3@sha256:71131702f671a88b3808a70b7330f9679cd9b9933adcafadc191508edfe55bba AS session-forwarder
 USER 65534:65534
 COPY --chmod=0755 image/sandbox-forward /usr/local/bin/sandbox-forward
+COPY --from=lifecycle-build --chmod=0755 /out/sandbox-lifecycle /usr/local/bin/sandbox-lifecycle
 ENTRYPOINT ["/usr/local/bin/sandbox-forward"]
+
+# The session group's lifecycle broker owns the socket directories.
+FROM scratch AS session-lifecycle
+COPY --from=lifecycle-build --chmod=0755 /out/sandbox-lifecycle /usr/local/bin/sandbox-lifecycle
+COPY --from=lifecycle-build --chown=13:13 /out/run/ /run/
+USER 13:13
+ENTRYPOINT ["/usr/local/bin/sandbox-lifecycle", "serve"]
 
 # Offline project initializer, independent of both agent images.
 FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS session-init
@@ -103,6 +119,7 @@ RUN apk add --no-cache openssh-client \
     && mv /tmp/passwd /etc/passwd \
     && chmod 0644 /etc/passwd
 COPY --chmod=0755 image/sandbox-ssh-agent image/sandbox-ssh-unlock /usr/local/bin/
+COPY --from=lifecycle-build --chmod=0755 /out/sandbox-lifecycle /usr/local/bin/sandbox-lifecycle
 ENTRYPOINT ["/usr/local/bin/sandbox-ssh-agent"]
 USER 65534:65534
 
@@ -114,6 +131,7 @@ COPY --chmod=0644 squid/squid.conf /etc/squid/squid.conf.template
 COPY --chmod=0644 squid/base-policy.yaml /etc/squid/base-policy.yaml
 COPY --chmod=0755 image/sandbox-policy image/sandbox-proxy image/sandbox-proxy-config \
     image/sandbox-trust /usr/local/bin/
+COPY --from=lifecycle-build --chmod=0755 /out/sandbox-lifecycle /usr/local/bin/sandbox-lifecycle
 ENTRYPOINT ["/usr/local/bin/sandbox-proxy"]
 USER 13:13
 
@@ -182,6 +200,8 @@ COPY --chmod=0755 image/sandbox-pwsh /usr/local/libexec/sandbox/pwsh
 RUN ln -s /usr/local/libexec/sandbox/pwsh /usr/local/bin/pwsh
 ENV POWERSHELL_TELEMETRY_OPTOUT=1 \
     POWERSHELL_UPDATECHECK=Off
+
+COPY --from=lifecycle-build --chmod=0755 /out/sandbox-lifecycle /usr/local/bin/sandbox-lifecycle
 
 # Start contract: the entrypoint supplies the runtime identity for every
 # command; the default command runs /usr/local/libexec/sandbox/init.d/*, then
