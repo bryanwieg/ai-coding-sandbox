@@ -47,6 +47,9 @@ export COMPOSE_PATH_SEPARATOR COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES
 port=$SANDBOX_PUBLISH_PORTS
 
 cleanup() {
+    # A failed audit can leave a one-off session attached to its network.
+    docker ps -aq --filter "label=com.docker.compose.project=$project_name" |
+        xargs -r docker rm -f >/dev/null 2>&1 || true
     (cd "$project" 2>/dev/null && docker compose --env-file .sandbox/env --profile '*' \
         down --volumes --remove-orphans >/dev/null 2>&1) || true
     # The direct-egress network is outside the configuration used by down.
