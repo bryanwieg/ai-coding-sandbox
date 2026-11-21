@@ -2,7 +2,7 @@
 
 Implement with the implement-in-phases skill; do not build from this file
 without it. Model tiers map to models in [models.md](models.md).
-Status: planned
+Status: built 4ca9722
 Before: phase 02 runs the broker in every session group and agents join it;
 the proxy, daemon, forwarder and ssh-agent still end themselves (idle
 counting, launch holds, the daemon's proxy hold, the forwarder's DNS check,
@@ -53,10 +53,10 @@ ends 2 s after its last agent, plus each service's grace.
 
 | Stage | Goal | Tier | Order | Status |
 | --- | --- | --- | --- | --- |
-| 03.1 | Egress proxy runs under the broker | top | first | planned |
-| 03.2 | ssh-agent runs under the broker | top | after 03.1 | planned |
-| 03.3 | Session daemon and forwarder run under the broker | top | after 03.2 | planned |
-| 03.4 | Retire the leases and the idle settings; session rules | top | after 03.3 | planned |
+| 03.1 | Egress proxy runs under the broker | top | first | done |
+| 03.2 | ssh-agent runs under the broker | top | after 03.1 | done |
+| 03.3 | Session daemon and forwarder run under the broker | top | after 03.2 | done |
+| 03.4 | Retire the leases and the idle settings; session rules | top | after 03.3 | done |
 
 The stages are sequential because 03.1-03.3 each edit `sandbox/Dockerfile`.
 
