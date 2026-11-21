@@ -36,6 +36,19 @@ cat > "$test_dir/bin/docker" <<'STUB'
 #!/bin/sh
 log=$SANDBOX_TEST_LOG
 printf '%s\n' "$*" >> "$log"
+# Hold Compose during startup, or its first stop during cleanup, so the
+# test can kill the launcher at that point. The watcher releases the stub.
+case "${SANDBOX_TEST_INTERRUPT:-}:$*" in
+    startup:*' --label '*|cleanup:'stop -t 15 c7')
+        if [ "$(grep -Fxc "$*" "$log")" = 1 ]; then
+            for _ in $(seq 100); do
+                grep -Fxq 'rm -f c7' "$log" && exit 0
+                sleep 0.1
+            done
+            exit 52
+        fi
+        ;;
+esac
 case "$*" in
     *' pull --quiet --policy missing --include-deps --ignore-buildable '*|*' build --quiet --with-dependencies '*)
         echo "preparing image on stdout"
@@ -62,7 +75,11 @@ case "$*" in
         printf 'lifecycle\ndocker\n'; exit 0 ;;
     *' --profile * ps -a -q') printf 'one-off\nexited\n'; exit 0 ;;
     *' --profile * down --remove-orphans') [ "${SANDBOX_TEST_FAIL:-}" != down ]; exit $? ;;
-    'ps -aq --filter label=ai-coding-sandbox.client='*) printf '%s\n' "${SANDBOX_TEST_LEFT:-}"; exit 0 ;;
+    'ps -aq --filter label=ai-coding-sandbox.client='*)
+        # The first orphan lookup during Compose startup sees no container.
+        if [ "${SANDBOX_TEST_INTERRUPT:-}" = startup ] && [ "$(grep -Fxc "$*" "$log")" = 1 ]; then exit 0; fi
+        printf '%s\n' "${SANDBOX_TEST_LEFT:-}"
+        exit 0 ;;
     'stop -t 15 '*|'rm -f '*) [ "${SANDBOX_TEST_FAIL:-}" != remove ]; exit $? ;;
     'compose --env-file .sandbox/env config --services')
         [ "${SANDBOX_TEST_FAIL:-}" != config ] || exit 41
@@ -133,7 +150,7 @@ case "$*" in
     *' trust --yes'|*' --rm trust') [ "${SANDBOX_TEST_FAIL:-}" != trust ] || exit 42 ;;
     *' ssh-unlock --if-needed') [ "${SANDBOX_TEST_FAIL:-}" != unlock ] || exit 43 ;;
     *' restart egress-proxy') [ "${SANDBOX_TEST_FAIL:-}" != restart ] || exit 45 ;;
-    *' --rm --label '*' claude') [ "${SANDBOX_TEST_FAIL:-}" != launch ] || exit 48 ;;
+    *' --rm --pull never --label '*' claude') [ "${SANDBOX_TEST_FAIL:-}" != launch ] || exit 48 ;;
 esac
 STUB
 # Skip the one-second group poll delay. Keep the detached watcher's own delay.
@@ -170,7 +187,7 @@ for shell in bash zsh; do
     trust='compose --env-file .sandbox/env run --rm -T trust --yes '
     unlock='compose --env-file .sandbox/env run --rm ssh-unlock --if-needed '
     launch='compose --env-file .sandbox/env run --rm '
-    agent='--label ai-coding-sandbox.client=ID '
+    agent='--pull never --label ai-coding-sandbox.client=ID '
     reload='compose --env-file .sandbox/env exec -T egress-proxy sandbox-proxy-config --reload '
     restart='compose --env-file .sandbox/env restart egress-proxy '
     compose='compose --env-file .sandbox/env'
@@ -188,7 +205,7 @@ for shell in bash zsh; do
         run "$test_dir/project" "SANDBOX_TEST_SSH=1 SANDBOX_TEST_STATE=active sandbox $service" > "$test_dir/output" 2>"$test_dir/err"
         [ ! -s "$test_dir/err" ]
         if grep -Fq 'preparing image' "$test_dir/output"; then exit 1; fi
-        client=$(sed -n "s/^.* run --rm --label ai-coding-sandbox.client=\([0-9.]*\) $service\$/\1/p" "$log")
+        client=$(sed -n "s/^.* run --rm --pull never --label ai-coding-sandbox.client=\([0-9.]*\) $service\$/\1/p" "$log")
         printf '%s\n' "$client" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
         diff - "$log" <<EOF
 $compose pull --quiet --policy missing --include-deps --ignore-buildable $service
@@ -199,7 +216,7 @@ ${trust% }
 $compose exec -T egress-proxy sh -c cat /tmp/applied-policy 2>/dev/null || echo unknown
 ${unlock% }
 $status
-${launch}--label ai-coding-sandbox.client=$client $service
+${launch}--pull never --label ai-coding-sandbox.client=$client $service
 ps -aq --filter label=ai-coding-sandbox.client=$client
 $compose config --images
 EOF
@@ -229,7 +246,7 @@ EOF
     grep -Fxq codex "$test_dir/output"
     [ "$(grep -Fxc "$poll" "$log")" = 2 ]
     [ "$(grep -Fxc sleep "$log")" = 1 ]
-    [ "$(grep -nF "$poll" "$log" | head -n 1 | cut -d: -f1)" -gt "$(grep -n ' run --rm --label .* claude$' "$log" | cut -d: -f1)" ]
+    [ "$(grep -nF "$poll" "$log" | head -n 1 | cut -d: -f1)" -gt "$(grep -n ' run --rm --pull never --label .* claude$' "$log" | cut -d: -f1)" ]
 
     # A wait during SSH preparation unlocks again in the new group.
     : > "$log"
@@ -239,6 +256,17 @@ EOF
     [ "$(grep -Fxc "${unlock% }" "$log")" = 2 ]
     [ "$(grep -A1 -Fx "$poll" "$log")" = "$poll
 ${unlock% }" ]
+
+    # The unlocked group can also be gone before the second status check.
+    : > "$log"
+    printf '%s\n' active absent > "$states"
+    run "$test_dir/project" 'SANDBOX_TEST_SSH=1 sandbox' >/dev/null
+    [ "$(grep -E 'sandbox-lifecycle status$|ssh-unlock --if-needed$| --label ' "$log" |
+        sed 's/ --label .*$/ --label/')" = "$status
+${unlock% }
+$status
+${unlock% }
+${launch}--pull never --label" ]
 
     # Another launch can make the group joinable while this one waits.
     : > "$log"
@@ -278,18 +306,33 @@ rm -f c9
 $compose config --images" ]
     [ -z "$(ls -A "$TMPDIR")" ]
 
-    # The watcher outlives its shell and cleans up even when the shell
-    # never reaches the usual end-of-launch cleanup.
-    : > "$log"
-    run "$test_dir/project" 'export SANDBOX_TEST_LEFT=c7; _sandbox_watch orphan'
-    for _ in $(seq 50); do
-        [ -e "$TMPDIR/ai-coding-sandbox-watch.orphan" ] || break
-        sleep 0.1
-    done
-    [ ! -e "$TMPDIR/ai-coding-sandbox-watch.orphan" ]
-    [ "$(cat "$log")" = 'ps -aq --filter label=ai-coding-sandbox.client=orphan
-stop -t 15 c7
+    # Kill only the launching subshell. Its parent stays alive until the
+    # watcher has stopped and removed the late or partially cleaned-up client.
+    for point in startup cleanup; do
+        orphan_log=$test_dir/$shell-$point
+        : > "$orphan_log"
+        case "$point" in startup) ready=' --label ' ;; cleanup) ready='stop -t 15 c7' ;; esac
+        # shellcheck disable=SC2016 # The Bash or Zsh test process expands these.
+        SANDBOX_TEST_LOG=$orphan_log SANDBOX_TEST_INTERRUPT=$point SANDBOX_TEST_READY=$ready SANDBOX_TEST_LEFT=c7 \
+            run "$test_dir/project" '
+                sandbox >/dev/null 2>&1 & launcher=$!
+                for _ in $(seq 50); do
+                    grep -Fq "$SANDBOX_TEST_READY" "$SANDBOX_TEST_LOG" && break
+                    sleep 0.1
+                done
+                kill -KILL "$launcher" || exit 1
+                wait "$launcher" 2>/dev/null || :
+                for _ in $(seq 80); do
+                    grep -Fxq "rm -f c7" "$SANDBOX_TEST_LOG" && [ -z "$(ls -A "$TMPDIR")" ] && exit 0
+                    sleep 0.1
+                done
+                exit 1'
+        label=$(sed -n 's/^.* --label \(ai-coding-sandbox.client=[0-9.]*\) claude$/\1/p' "$orphan_log")
+        [ "$(grep -Fxc "ps -aq --filter label=$label" "$orphan_log")" -ge 2 ]
+        if [ "$point" = cleanup ]; then [ "$(grep -Fxc 'stop -t 15 c7' "$orphan_log")" = 2 ]; fi
+        [ "$(tail -n 2 "$orphan_log")" = 'stop -t 15 c7
 rm -f c7' ]
+    done
 
     for state in active absent; do
         : > "$log"
@@ -319,7 +362,7 @@ services=docker' ]
     [ "$(run "$test_dir/project" 'unset HERDR_AGENT; SANDBOX_TEST_HERDR=1 sandbox codex' | tr '\n' ' ')" = "${trust}HERDR_AGENT=codex ${launch}${agent}codex " ]
     [ "$(run "$test_dir/project" 'HERDR_AGENT=claude SANDBOX_TEST_HERDR=1 sandbox codex' | tr '\n' ' ')" = "HERDR_AGENT=claude ${trust}HERDR_AGENT=claude ${launch}${agent}codex " ]
     [ "$(run "$test_dir/project" 'unset HERDR_AGENT; SANDBOX_TEST_HERDR=1 sandbox claude bash' | tr '\n' ' ')" = "${trust}${launch}${agent}claude bash " ]
-    [ "$(run "$test_dir/project" 'SANDBOX_TEST_SSH=1 sandbox codex' | tr '\n' ' ')" = "${trust}${unlock}${launch}${agent}codex " ]
+    [ "$(run "$test_dir/project" 'SANDBOX_TEST_SSH=1 SANDBOX_TEST_STATE=active sandbox codex' | tr '\n' ' ')" = "${trust}${unlock}${launch}${agent}codex " ]
     [ "$(run "$test_dir/project" 'SANDBOX_TEST_APPLIED=abc SANDBOX_TEST_WANTED=abc sandbox' | tr '\n' ' ')" = "${trust}${launch}${agent}claude " ]
     [ "$(run "$test_dir/project" 'SANDBOX_TEST_APPLIED= SANDBOX_TEST_WANTED= sandbox' | tr '\n' ' ')" = "${trust}${launch}${agent}claude " ]
     [ "$(run "$test_dir/project" 'SANDBOX_TEST_APPLIED=old SANDBOX_TEST_WANTED=new sandbox codex' 2>"$test_dir/err" | tr '\n' ' ')" = "${trust}${reload}${launch}${agent}codex " ]

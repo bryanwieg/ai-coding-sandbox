@@ -83,10 +83,10 @@ HELP
     if [ "$#" -eq 0 ]; then
         set -- claude
     fi
-    local sandbox_client='' sandbox_status=0
+    local sandbox_status=0
     case "$1" in
         claude|codex)
-            local sandbox_services sandbox_ssh=0 sandbox_group_waited
+            local sandbox_services sandbox_ssh=0 sandbox_group_needs_unlock
             _sandbox_prepare_images "$1" || return
             _sandbox_wait_for_group || return
             sandbox_services=$(docker compose --env-file .sandbox/env config --services) || return
@@ -97,28 +97,42 @@ HELP
                 docker compose --env-file .sandbox/env run --rm ssh-unlock --if-needed || return
             fi
             _sandbox_wait_for_group || return
-            if [ "$sandbox_group_waited" = 1 ] && [ "$sandbox_ssh" = 1 ]; then
+            if [ "$sandbox_group_needs_unlock" = 1 ] && [ "$sandbox_ssh" = 1 ]; then
                 docker compose --env-file .sandbox/env run --rm ssh-unlock --if-needed || return
             fi
 
-            sandbox_client=$$.$(date +%s).${RANDOM}
-            set -- --label "ai-coding-sandbox.client=$sandbox_client" "$@"
-            _sandbox_watch "$sandbox_client" || return
-            ;;
-    esac
-    case "$#:$1:${3-}" in
-        3:--label:claude|3:--label:codex)
-            # Herdr sees the host-side Docker process for a containerized agent.
-            HERDR_AGENT="${HERDR_AGENT-$3}" docker compose --env-file .sandbox/env run --rm "$@" || sandbox_status=$?
+            local sandbox_shell sandbox_client sandbox_marker
+            if [ -n "${ZSH_VERSION:-}" ]; then
+                zmodload zsh/system || return
+                # shellcheck disable=SC2154 # zsh/system provides sysparams.
+                sandbox_shell=${sysparams[pid]}
+            else
+                sandbox_shell=$BASHPID
+            fi
+            sandbox_client=$sandbox_shell.$(date +%s).${RANDOM}
+            sandbox_marker=${TMPDIR:-/tmp}/ai-coding-sandbox-watch.$sandbox_client
+            (set -C; : > "$sandbox_marker") || return 1
+            (
+                # exec gives Compose this foreground subshell's PID and terminal.
+                local sandbox_compose_pid
+                if [ -n "${ZSH_VERSION:-}" ]; then
+                    sandbox_compose_pid=${sysparams[pid]}
+                else
+                    sandbox_compose_pid=$BASHPID
+                fi
+                _sandbox_watch "$sandbox_shell" "$sandbox_compose_pid" "$sandbox_marker" "$sandbox_client" || exit 1
+                if [ "$#" -eq 1 ]; then export HERDR_AGENT="${HERDR_AGENT-$1}"; fi
+                exec docker compose --env-file .sandbox/env run --rm --pull never \
+                    --label "ai-coding-sandbox.client=$sandbox_client" "$@"
+            ) || sandbox_status=$?
+            _sandbox_stop_client "$sandbox_client"
+            rm -f "$sandbox_marker"
+            sandbox-prune
             ;;
         *)
             docker compose --env-file .sandbox/env run --rm "$@" || sandbox_status=$?
             ;;
     esac
-    if [ -n "$sandbox_client" ]; then
-        _sandbox_stop_client "$sandbox_client"
-        sandbox-prune
-    fi
     return "$sandbox_status"
 }
 
@@ -140,11 +154,14 @@ _sandbox_prepare_images() {
 _sandbox_wait_for_group() {
     local sandbox_reason=${1:-launch} sandbox_reply sandbox_ids sandbox_names sandbox_poll=1
     if [ "$sandbox_reason" = launch ]; then
-        sandbox_group_waited=0
+        # Only a group that is still joinable can reuse the first unlock.
+        sandbox_group_needs_unlock=1
         sandbox_reply=$(docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status 2>/dev/null) || return 0
-        if grep -Fxq 'joinable=yes' <<< "$sandbox_reply"; then return 0; fi
+        if grep -Fxq 'joinable=yes' <<< "$sandbox_reply"; then
+            sandbox_group_needs_unlock=0
+            return 0
+        fi
         echo "sandbox: waiting for this project's previous session group to stop, so this launch starts with the current settings." >&2
-        sandbox_group_waited=1
     fi
     set -- lifecycle egress-proxy docker publish ssh-agent
     while :; do
@@ -166,10 +183,8 @@ _sandbox_wait_for_group() {
 
 # Stops and removes the session containers a launch labeled with CLIENT, such
 # as one whose docker compose client was killed. --rm leaves none otherwise.
-# Ends the launch's watcher.
 _sandbox_stop_client() {
     local sandbox_containers sandbox_id
-    rm -f "${TMPDIR:-/tmp}/ai-coding-sandbox-watch.$1"
     sandbox_containers=$(docker ps -aq --filter "label=ai-coding-sandbox.client=$1" 2>/dev/null) || return 0
     [ -n "$sandbox_containers" ] || return 0
     echo 'sandbox: stopping the session container its client left behind.' >&2
@@ -184,26 +199,31 @@ _sandbox_stop_client() {
 # connection closes, the watcher stops and removes the launch's containers.
 # The launch ends the watcher by removing its marker file.
 _sandbox_watch() {
-    local sandbox_marker="${TMPDIR:-/tmp}/ai-coding-sandbox-watch.$1"
-    (set -C; : > "$sandbox_marker") || return 1
     # A subshell keeps the watcher out of the shell's job table, and nohup
     # keeps it running when the terminal hangs up.
     # shellcheck disable=SC2016 # the watcher expands its own arguments
     (nohup sh -c '
-        shell=$1 marker=$2 label=$3
+        shell=$1 client=$2 marker=$3 label=$4
         while [ -e "$marker" ]; do
             if ! kill -0 "$shell" 2>/dev/null; then
+                # Check before listing so a client exiting during the lookup
+                # gets a final lookup after it can no longer create a container.
+                starting=false
+                if kill -0 "$client" 2>/dev/null; then starting=true; fi
                 containers=$(docker ps -aq --filter "label=$label") || containers=
                 if [ -n "$containers" ]; then
                     docker stop -t 15 $containers >/dev/null 2>&1
                     docker rm -f $containers >/dev/null 2>&1
+                elif "$starting"; then
+                    sleep 2
+                    continue
                 fi
                 rm -f "$marker"
                 exit 0
             fi
             sleep 2
         done
-    ' sandbox-watch "$$" "$sandbox_marker" "ai-coding-sandbox.client=$1" \
+    ' sandbox-watch "$1" "$2" "$3" "ai-coding-sandbox.client=$4" \
         </dev/null >/dev/null 2>&1 &)
 }
 
