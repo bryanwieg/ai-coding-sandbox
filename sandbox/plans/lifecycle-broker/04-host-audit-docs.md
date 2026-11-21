@@ -2,7 +2,7 @@
 
 Implement with the implement-in-phases skill; do not build from this file
 without it. Model tiers map to models in [models.md](models.md).
-Status: planned
+Status: built 95dc1d8
 Before: phase 03 put every service under the broker and removed the old
 mechanisms from the images; the host's `sandbox` function still touches
 `/tmp/launch-hold`, has no orphan handling, `sandbox-stop` or
@@ -42,9 +42,9 @@ handoff.
 
 | Stage | Goal | Tier | Order | Status |
 | --- | --- | --- | --- | --- |
-| 04.1 | Host functions: group wait, orphan handling, sandbox-stop, sandbox-status | top | first | planned |
-| 04.2 | Audit the broker's boundary and the group's end | top | after 04.1 | planned |
-| 04.3 | Documentation and plan cleanup | middle+ | after 04.2 | planned |
+| 04.1 | Host functions: group wait, orphan handling, sandbox-stop, sandbox-status | top | first | done |
+| 04.2 | Audit the broker's boundary and the group's end | top | after 04.1 | done |
+| 04.3 | Documentation and plan cleanup | middle+ | after 04.2 | done |
 
 ## 04.1 Host functions: group wait, orphan handling, sandbox-stop, sandbox-status
 
@@ -381,3 +381,9 @@ Model basis: J1 F1 R2 C0 K0 P1 V2 S0 = 7 -> middle, override 3 (V = 2, R =
   a slow pull cannot land `ssh-unlock` in a group that began stopping; its
   output is shown only on failure; the group wait counts polls so stubbed
   `sleep` tests terminate; the README names both launch limits.
+- 2026-11-21 (phase review, Codex gpt-6.2-astra high): fixed the orphan
+  watcher's PID in subshells, its marker lifetime and in-flight launches,
+  `--pull never` on agent runs, re-unlock when the unlocked group is gone
+  (04.1), and audit cleanup of leftover one-off containers (04.2). Verified
+  by test-shell-functions (bash, zsh), check-sandbox, both audits (no
+  leftover networks) and a live sandbox-stop.
