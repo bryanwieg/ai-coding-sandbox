@@ -64,6 +64,24 @@ child process, so it cannot load the functions into the current terminal; it
 prints the `.` command that does. Your startup file then runs code fetched
 from this repository's `main` branch, as a checkout pulled from `main` would.
 
+The installed copy keeps itself current. The installer records the URL it
+downloaded from in `source-url` next to the copy. Each `sandbox`,
+`sandbox claude` or `sandbox codex` launch from that copy first downloads
+`sandbox.sh` from that URL; other services and the other functions do not
+check. A download that differs from the copy must hold the `sandbox`
+function and parse in the running shell, and then replaces the copy
+atomically. Whenever the installed copy differs from what the shell loaded,
+whether this launch, another terminal or an installer rerun updated it, the
+launch sources it and continues with the new functions, before it pulls
+images. A failed check (offline, no `curl`, an invalid download) prints a
+warning and launches with the installed copy. A copy sourced from a checkout
+has no `source-url`, so it never updates itself and makes no request. This
+means every agent launch runs host code from that URL without review, in
+your shell and outside the sandbox, as the Compose file from `:latest`
+already shapes each session; to avoid that, source a checkout's copy
+instead. A copy installed before this feature has neither the check nor a
+`source-url`; rerun the installer once to get both.
+
 To use a checkout's copy instead, for example while developing the sandbox,
 add it to your startup file from the checkout:
 
@@ -76,7 +94,7 @@ sandbox/bin/install-shell-functions ~/.zshrc   # or name the file
 | --- | --- |
 | `sandbox --help` (or `-h`) | Show sandbox commands and parameters without starting Docker; works before setup |
 | `sandbox-init [--reference PATH] [--force]` | `sandbox-init-config` from the dedicated init image, offline, in this folder |
-| `sandbox [SERVICE [ARGS...]]` | Without `.sandbox/env`, run `sandbox-init` at a Git repository's root (and stage `.sandbox/`) or in a folder outside any repository; approve egress, unlock SSH if enabled, then run the agent with Compose (default `claude`); other services run directly |
+| `sandbox [SERVICE [ARGS...]]` | Without `.sandbox/env`, run `sandbox-init` at a Git repository's root (and stage `.sandbox/`) or in a folder outside any repository; for `claude` and `codex`, first update the installed functions and load them into this shell; approve egress, unlock SSH if enabled, then run the agent with Compose (default `claude`); other services run directly |
 | `sandbox-trust` | `sandbox trust`, then reload a running proxy whose policy changed |
 | `sandbox-unlock` | Unlock SSH keys for the running session group or for a session you start within two minutes |
 | `sandbox-stop` | Stop the project's sessions and services, keeping its volumes |
@@ -84,8 +102,10 @@ sandbox/bin/install-shell-functions ~/.zshrc   # or name the file
 | `sandbox-prune` | Remove released sandbox images that a newer release replaced; runs after every `claude` or `codex` session |
 
 For `claude` and `codex`, including a shell or command in either image,
-`sandbox` pulls missing images and builds images configured for local builds
-before starting any services. It waits for a stopping group, then validates
+`sandbox` first updates an installed copy of the functions as described
+above, before it creates a missing `.sandbox/`. It then pulls missing images
+and builds images configured for local builds before starting any services.
+It waits for a stopping group, then validates
 and automatically approves the project's egress policy. With the `ssh`
 profile enabled, it unlocks SSH keys if none are loaded, prompting for
 passphrases when needed. A failed approval or unlock stops the launch.

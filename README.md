@@ -27,7 +27,9 @@ curl -fsSL https://raw.githubusercontent.com/bryanwieg/ai-coding-sandbox/main/in
 It downloads the shell functions (no clone needed), creates the shared state
 volumes, and sources the functions once from that shell's startup file
 (`~/.zshrc` or `~/.bashrc`). Open a new terminal, or run the `.` command it
-prints, to load them. Rerunning it updates.
+prints, to load them. After that, each agent launch keeps the installed
+functions current and loads an update into the running shell; rerunning the
+installer also updates them.
 
 Then, from a project's root folder:
 

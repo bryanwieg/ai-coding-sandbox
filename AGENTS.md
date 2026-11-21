@@ -65,8 +65,11 @@ instructions; the development rules here do not apply to them.
 ## Releases
 
 - A push to `main` publishes the images and the Compose file that every
-  project's sessions load. Push, merge, tag, dispatch a workflow or release
-  only on an explicit user request for that action.
+  project's sessions load. It also publishes `sandbox/shell/sandbox.sh`,
+  which every installed launcher loads on its next agent launch, with no
+  release run. Changes to it must therefore keep working with the Compose
+  file and images already released. Push, merge, tag, dispatch a workflow or
+  release only on an explicit user request for that action.
 - The `automerge` and `automerge-squash` labels merge a pull request and
   release it once its checks pass (`.github/workflows/automerge.yml`).
   Adding one is a merge request: do so only when the user asks for it.
