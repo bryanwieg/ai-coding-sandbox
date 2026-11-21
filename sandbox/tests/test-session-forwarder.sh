@@ -1,10 +1,11 @@
 #!/bin/sh
+# shellcheck source-path=SCRIPTDIR
 # Runtime test for the session-forwarder image against a real session daemon:
 # a single port and a range reach containers in the daemon from the host,
 # extra TCP slots and UDP slots do too, idle UDP clients expire without
 # stopping the relay, unset ports exit cleanly, invalid values and more than
-# 100 ports in all are refused, the forwarder exits
-# with the daemon, and its publish network has no Internet egress. It needs a
+# 100 ports in all are refused, the forwarder exits when its broker
+# drains, and its publish network has no Internet egress. It needs a
 # Docker host that can run the rootless daemon, so it is run explicitly.
 set -eu
 
@@ -12,6 +13,7 @@ sandbox_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 daemon_image=ai-coding-sandbox-session-daemon:test
 forwarder_image=ai-coding-sandbox-session-forwarder:test
 prefix=sandbox-forwarder-test-$$
+broker=$prefix-broker
 internal=$prefix-internal
 publish=$prefix-publish
 control=$prefix-control
@@ -19,6 +21,9 @@ daemon=$prefix-daemon
 base=$((20000 + $$ % 10000))
 udp_base=$((base + 10))
 failures=0
+
+# shellcheck source=lifecycle-helper.sh
+. "$sandbox_dir/tests/lifecycle-helper.sh"
 
 cleanup() {
     docker ps -aq --filter "label=$prefix" | xargs -r docker rm -f -v >/dev/null 2>&1 || :
@@ -34,6 +39,9 @@ fail() { printf 'FAIL %s\n' "$1" >&2; failures=$((failures + 1)); }
 
 docker build --quiet --target session-daemon --tag "$daemon_image" "$sandbox_dir" >/dev/null
 docker build --quiet --target session-forwarder --tag "$forwarder_image" "$sandbox_dir" >/dev/null
+lifecycle_build
+lifecycle_start "$broker"
+lifecycle_hold "$broker" "$forwarder_image"
 docker network create --internal --label "$prefix" "$internal" >/dev/null
 docker network create --label "$prefix" \
     -o com.docker.network.bridge.enable_ip_masquerade=false "$publish" >/dev/null
@@ -41,6 +49,7 @@ docker network create --label "$prefix" \
 for volume in "$daemon-data" "$daemon-certs"; do
     docker volume create --label "$prefix" "$volume" >/dev/null
 done
+# shellcheck disable=SC2046 # lifecycle_mount prints the two mount arguments.
 docker run -d --name "$daemon" --label "$prefix" \
     --network "$internal" --network-alias docker --user 1000:1000 --read-only \
     --cap-drop ALL --cap-add SETUID --cap-add SETGID \
@@ -48,7 +57,7 @@ docker run -d --name "$daemon" --label "$prefix" \
     --security-opt label=disable --device /dev/net/tun \
     --tmpfs /run:uid=1000,gid=1000,mode=0755 --tmpfs /tmp:mode=1777 --tmpfs /var/lib/docker \
     -v "$daemon-data:/home/rootless/.local/share/docker" -v "$daemon-certs:/certs" \
-    -e XDG_RUNTIME_DIR=/run/user/1000 -e SANDBOX_DOCKER_START_GRACE=600 \
+    -e XDG_RUNTIME_DIR=/run/user/1000 $(lifecycle_mount "$broker" daemon) \
     "$daemon_image" >/dev/null
 
 client() {
@@ -64,11 +73,6 @@ until client info >/dev/null 2>&1; do
     [ "$tries" -lt 60 ] || { echo 'The session daemon did not become ready.' >&2; exit 1; }
     sleep 1
 done
-# Hold a client lease, as a session does, so the daemon stays up between checks.
-docker run -d --name "$prefix-lease" --label "$prefix" --network "$internal" --user 1000:1000 \
-    -v "$daemon-certs:/certs:ro" -e DOCKER_HOST=tcp://docker:2376 \
-    -e DOCKER_TLS_VERIFY=1 -e DOCKER_CERT_PATH=/certs/client -e DOCKER_CONFIG=/tmp/docker \
-    --entrypoint docker "$daemon_image" events >/dev/null
 docker save busybox:1.37 | client load >/dev/null
 for port in "$base" $((base + 1)) $((base + 2)); do
     client run -d -p "$port:8080" busybox:1.37 \
@@ -86,9 +90,10 @@ done
 start_forwarder() {
     name=$1 ports=$2
     shift 2
+    # shellcheck disable=SC2046 # lifecycle_mount prints the two mount arguments.
     docker create --name "$name" --label "$prefix" --network "$publish" \
         --user 65534:65534 --read-only --cap-drop ALL --security-opt no-new-privileges \
-        -e "SANDBOX_PUBLISH_PORTS=$ports" -e SANDBOX_FORWARD_INTERVAL=1 \
+        -e "SANDBOX_PUBLISH_PORTS=$ports" $(lifecycle_mount "$broker" services) \
         "$@" "$forwarder_image" >/dev/null
     docker network connect "$internal" "$name"
     docker start "$name" >/dev/null
@@ -222,13 +227,18 @@ else
     echo 'skip egress check: this host cannot reach 8.8.8.8:53 on a normal bridge'
 fi
 
-docker rm -f -v "$daemon" >/dev/null
-if wait_exit "$prefix-range" 20 && docker logs "$prefix-range" 2>&1 | grep -q 'session daemon is gone'; then
-    pass 'the forwarder exits after the daemon is gone'
+if [ "$(docker inspect -f '{{.State.Running}}' "$prefix-range")" != true ]; then
+    fail 'the forwarder exited before the broker drain'
+fi
+lifecycle_drain "$broker" &
+drain_pid=$!
+if [ "$(timeout 10 docker wait "$prefix-range")" = 0 ]; then
+    pass 'the forwarder exits 0 within 10 seconds of drain'
 else
-    fail 'the forwarder kept running without the daemon'
+    fail 'the forwarder failed to drain cleanly within 10 seconds'
     docker logs "$prefix-range" 2>&1 | tail -5 >&2
 fi
+wait "$drain_pid" || fail 'the broker failed to drain'
 
 [ "$failures" -eq 0 ] || { echo "$failures check(s) failed." >&2; exit 1; }
 echo 'Session forwarder checks passed.'

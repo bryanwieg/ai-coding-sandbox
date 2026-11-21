@@ -82,16 +82,16 @@ RUN set -eu; \
 ENV XDG_DATA_HOME=/home/rootless/.local/share/docker
 COPY --chmod=0755 image/sandbox-dockerd /usr/local/bin/sandbox-dockerd
 COPY --from=lifecycle-build --chmod=0755 /out/sandbox-lifecycle /usr/local/bin/sandbox-lifecycle
-ENTRYPOINT ["/usr/local/bin/sandbox-dockerd"]
+ENTRYPOINT ["/usr/local/bin/sandbox-lifecycle", "run", "docker", "--", "/usr/local/bin/sandbox-dockerd"]
 USER 1000
 
 # Published port forwarder. It only relays the ports in SANDBOX_PUBLISH_PORTS
-# from the host to the session daemon, and exits with the daemon.
+# from the host to the session daemon, and ends with the session group.
 FROM alpine/socat:1.8.1.3@sha256:71131702f671a88b3808a70b7330f9679cd9b9933adcafadc191508edfe55bba AS session-forwarder
 USER 65534:65534
 COPY --chmod=0755 image/sandbox-forward /usr/local/bin/sandbox-forward
 COPY --from=lifecycle-build --chmod=0755 /out/sandbox-lifecycle /usr/local/bin/sandbox-lifecycle
-ENTRYPOINT ["/usr/local/bin/sandbox-forward"]
+ENTRYPOINT ["/usr/local/bin/sandbox-lifecycle", "run", "publish", "--", "/usr/local/bin/sandbox-forward"]
 
 # The session group's lifecycle broker owns the socket directories.
 FROM scratch AS session-lifecycle

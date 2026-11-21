@@ -1,22 +1,24 @@
 #!/bin/sh
-# Runtime test for the generic session-daemon image: supported and unsupported
-# UIDs, the UID/GID notice, the startup grace period, the proxy hold while
-# starting, the client lease, the launch hold, the data wipe, the short
-# container stop timeout only for ephemeral data, the socket that containers
-# bind-mount to manage the daemon, and that no anonymous volumes are left
-# behind. It needs a Docker host that can run the rootless daemon, so it
-# is run explicitly, not in CI.
+# shellcheck source-path=SCRIPTDIR
+# Runtime test for the rootless session daemon. Covers UID and group checks,
+# broker admission and drain, ephemeral and persistent data, container stop
+# timeouts, the bind-mountable daemon socket and anonymous-volume cleanup.
+# Run locally on a Docker host that supports the rootless daemon.
 set -eu
 
 sandbox_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 image=ai-coding-sandbox-session-daemon:test
 prefix=sandbox-daemon-test-$$
+broker=$prefix-broker
 network=$prefix-net
 test_dir=$(mktemp -d)
 failures=0
 
+# shellcheck source=lifecycle-helper.sh
+. "$sandbox_dir/tests/lifecycle-helper.sh"
+
 cleanup() {
-    docker ps -aq --filter "label=$prefix" | xargs -r docker rm -f >/dev/null 2>&1 || :
+    docker ps -aq --filter "label=$prefix" | xargs -r docker rm -f -v >/dev/null 2>&1 || :
     docker volume ls -q --filter "label=$prefix" | xargs -r docker volume rm >/dev/null 2>&1 || :
     docker network rm "$network" >/dev/null 2>&1 || :
     rm -rf "$test_dir"
@@ -27,6 +29,9 @@ pass() { printf 'ok   %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; failures=$((failures + 1)); }
 
 docker build --quiet --target session-daemon --tag "$image" "$sandbox_dir" >/dev/null
+lifecycle_build
+lifecycle_start "$broker"
+lifecycle_hold "$broker" "$image"
 docker network create --internal --label "$prefix" "$network" >/dev/null
 docker volume ls -q --filter dangling=true | sort > "$test_dir/dangling-before"
 
@@ -41,8 +46,9 @@ start_daemon() {
         docker volume inspect "$volume" >/dev/null 2>&1 ||
             docker volume create --label "$prefix" "$volume" >/dev/null
     done
+    # shellcheck disable=SC2046 # lifecycle_mount prints the two mount arguments.
     docker run -d --name "$name" --hostname docker --label "$prefix" \
-        --network "$network" --network-alias docker \
+        $(lifecycle_mount "$broker" daemon) --network "$network" --network-alias docker \
         --user "$uid:$gid" --read-only \
         --cap-drop ALL --cap-add SETUID --cap-add SETGID \
         --security-opt seccomp=unconfined --security-opt systempaths=unconfined \
@@ -168,102 +174,45 @@ else
     fail 'unsupported UID was not refused'
 fi
 
-name=$prefix-grace
-start_daemon "$name" 1000 1000 -e SANDBOX_DOCKER_IDLE_INTERVAL=2 -e SANDBOX_DOCKER_START_GRACE=10
-if wait_exit "$name" 40 && docker logs "$name" 2>&1 | grep -q 'within 10s'; then
-    pass 'daemon stops after the grace period without a client'
+# Admission is checked before the daemon script starts.
+# shellcheck disable=SC2046 # lifecycle_mount prints the two mount arguments.
+refused=$(docker run -d --label "$prefix" --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges $(lifecycle_mount "$broker" services) "$image")
+if [ "$(timeout 5 docker wait "$refused")" = 75 ]; then
+    pass 'the services socket refuses the daemon'
 else
-    fail 'daemon did not stop after the grace period'
+    fail 'expected immediate refusal on the services socket with exit 75'
+fi
+bare=$(docker run -d --label "$prefix" --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges "$image")
+if [ "$(timeout 15 docker wait "$bare")" = 1 ] &&
+    docker logs "$bare" 2>&1 | grep -Fq 'cannot reach the lifecycle broker'; then
+    pass 'without a broker the daemon exits 1 within 15 seconds'
+else
+    fail 'expected an unreachable broker error and exit 1'
 fi
 
-# A launch hold, touched by the host just before a launch, keeps an otherwise
-# idle daemon up until it expires.
-name=$prefix-launch-hold
-start_daemon "$name" 1000 1000 -e SANDBOX_DOCKER_IDLE_INTERVAL=1 -e SANDBOX_DOCKER_START_GRACE=3 \
-    -e SANDBOX_DOCKER_LAUNCH_HOLD=10
-docker exec "$name" touch /tmp/launch-hold
-sleep 6
-if [ "$(docker inspect -f '{{.State.Running}}' "$name")" = true ]; then
-    pass 'a launch hold keeps an idle daemon up'
-else
-    fail 'the daemon stopped despite a fresh launch hold'
-fi
-if wait_exit "$name" 30; then
-    pass 'the daemon stops once the launch hold expires'
-else
-    fail 'the daemon kept running after the launch hold expired'
-fi
-docker rm -f "$name" >/dev/null
-
-# Until its first client connects, the daemon holds a connection to the proxy
-# in HTTPS_PROXY, so a launch waiting for the daemon keeps the proxy alive;
-# the agent's own lease replaces it. A listener stands in for the proxy and
-# reports how many connections it holds.
-proxy=$prefix-proxy
-docker run -d --name "$proxy" --label "$prefix" --network "$network" --network-alias egress-proxy \
-    --entrypoint sh "$image" -c 'nc -lk -p 3128 -e sh -c "cat >/dev/null"' >/dev/null
-proxy_held() {
-    docker exec "$proxy" sh -c 'netstat -tn | awk "\$4 ~ /:3128\$/ && \$6 == \"ESTABLISHED\"" | wc -l'
-}
-# Waits up to $2 seconds until the proxy holds $1 connections.
-wait_held() {
-    tries=0
-    until [ "$(proxy_held)" -eq "$1" ]; do
-        tries=$((tries + 1))
-        [ "$tries" -lt "$2" ] || return 1
-        sleep 1
-    done
-}
-name=$prefix-hold
-start_daemon "$name" 1000 1000 -e SANDBOX_DOCKER_IDLE_INTERVAL=2 -e HTTPS_PROXY=http://egress-proxy:3128
-if wait_held 1 10; then
-    pass 'a starting daemon holds a connection to the proxy'
-else
-    fail "a starting daemon held $(proxy_held) proxy connection(s), expected 1"
-fi
-wait_ready "$name" 1000 || fail 'hold: daemon did not become ready'
-holder=$prefix-hold-client
-docker run -d --name "$holder" --label "$prefix" --network "$network" --user 1000:1000 \
-    -v "$name-certs:/certs:ro" -e DOCKER_HOST=tcp://docker:2376 \
-    -e DOCKER_TLS_VERIFY=1 -e DOCKER_CERT_PATH=/certs/client -e DOCKER_CONFIG=/tmp/docker \
-    --entrypoint docker "$image" events >/dev/null
-if wait_held 0 15 && [ "$(docker inspect -f '{{.State.Running}}' "$name")" = true ]; then
-    pass 'the proxy connection ends once a client connects'
-else
-    fail "the daemon still held $(proxy_held) proxy connection(s) with a client connected"
-fi
-docker rm -f -v "$holder" "$name" >/dev/null
-docker rm -f -v "$proxy" >/dev/null
-
-name=$prefix-lease
-start_daemon "$name" 1000 1000 -e SANDBOX_DOCKER_IDLE_INTERVAL=2 -e SANDBOX_DOCKER_START_GRACE=10
-wait_ready "$name" 1000 || fail 'lease: daemon did not become ready'
-printf 'FROM scratch\nCOPY marker /marker\n' > "$test_dir/Dockerfile"
+name=$prefix-wipe
+drain_broker=$prefix-wipe-broker
+lifecycle_start "$drain_broker"
+broker=$drain_broker start_daemon "$name" 1000 1000
+wait_ready "$name" 1000 || fail 'ephemeral: daemon did not become ready'
 tar -C "$test_dir" -cf - Dockerfile marker | client "$name" 1000 build --quiet --tag wipe-test - >/dev/null 2>&1 ||
-    fail 'lease: build failed'
-holder=$prefix-holder
-docker run -d --name "$holder" --label "$prefix" --network "$network" --user 1000:1000 \
-    -v "$name-certs:/certs:ro" -e DOCKER_HOST=tcp://docker:2376 \
-    -e DOCKER_TLS_VERIFY=1 -e DOCKER_CERT_PATH=/certs/client -e DOCKER_CONFIG=/tmp/docker \
-    --entrypoint docker "$image" events >/dev/null
-sleep 20
-if [ "$(docker inspect -f '{{.State.Running}}' "$name")" = true ]; then
-    pass 'daemon stays up past the grace period while a client holds the lease'
+    fail 'ephemeral: build failed'
+
+lifecycle_drain "$drain_broker" &
+drain_pid=$!
+if [ "$(timeout 30 docker wait "$name")" = 0 ]; then
+    pass 'the daemon exits 0 within 30 seconds of drain'
 else
-    fail 'daemon stopped although a client held the lease'
+    fail 'the daemon failed to drain cleanly within 30 seconds'
 fi
-# The client image declares volumes too; -v removes the holder's.
-docker rm -f -v "$holder" >/dev/null
-if wait_exit "$name" 30 && docker logs "$name" 2>&1 | grep -q 'no client connected;'; then
-    pass 'daemon stops after the lease ends'
-else
-    fail 'daemon did not stop after the lease ended'
-fi
+wait "$drain_pid" || fail 'the ephemeral daemon broker failed to drain'
 docker rm -f "$name" >/dev/null
-if [ -z "$(docker run --rm -v "$name-data:/data:ro" --entrypoint ls "$image" -A /data)" ]; then
-    pass 'data root is wiped when the daemon stops'
+if docker run --rm -v "$name-data:/data:ro" --entrypoint sh "$image" -c 'test ! -e /data/docker'; then
+    pass 'the drain wipes the ephemeral data root'
 else
-    fail 'data root was left behind'
+    fail 'the drain left the ephemeral data root behind'
 fi
 start_daemon "$name" 1000 1000
 if wait_ready "$name" 1000 && client "$name" 1000 info >/dev/null 2>&1 &&
@@ -290,23 +239,23 @@ else
 fi
 docker rm -f "$name" >/dev/null
 
-# Persistent data survives the daemon stopping on its own and a restart, and
+# Persistent data survives a broker drain and a restart, and
 # switching back to ephemeral wipes it at the next start.
 name=$prefix-keep
-keep_env='-e SANDBOX_DOCKER_IDLE_INTERVAL=2 -e SANDBOX_DOCKER_START_GRACE=10'
-# shellcheck disable=SC2086 # word-split options
-start_daemon "$name" 1000 1000 $keep_env -e SANDBOX_DOCKER_DATA=persistent
+keep_broker=$prefix-keep-broker
+lifecycle_start "$keep_broker"
+broker=$keep_broker start_daemon "$name" 1000 1000 -e SANDBOX_DOCKER_DATA=persistent
 wait_ready "$name" 1000 || fail 'persistent: daemon did not become ready'
 tar -C "$test_dir" -cf - Dockerfile marker | client "$name" 1000 build --quiet --tag keep-test - >/dev/null 2>&1 ||
     fail 'persistent: build failed'
-if wait_exit "$name" 40 && docker logs "$name" 2>&1 | grep -q 'no client connected;'; then
-    pass 'a persistent daemon still stops once idle'
+lifecycle_drain "$keep_broker"
+if [ "$(timeout 5 docker wait "$name")" = 0 ]; then
+    pass 'a persistent daemon exits cleanly on drain'
 else
-    fail 'a persistent daemon did not stop once idle'
+    fail 'the persistent daemon failed to drain cleanly'
 fi
 docker rm -f "$name" >/dev/null
-# shellcheck disable=SC2086
-start_daemon "$name" 1000 1000 $keep_env -e SANDBOX_DOCKER_DATA=persistent
+start_daemon "$name" 1000 1000 -e SANDBOX_DOCKER_DATA=persistent
 if wait_ready "$name" 1000 && client "$name" 1000 image inspect keep-test >/dev/null 2>&1; then
     pass 'a restarted persistent daemon keeps its images'
 else
@@ -318,8 +267,7 @@ else
     pass 'a persistent daemon keeps the default container stop timeout'
 fi
 docker rm -f "$name" >/dev/null
-# shellcheck disable=SC2086
-start_daemon "$name" 1000 1000 $keep_env
+start_daemon "$name" 1000 1000
 if wait_ready "$name" 1000 && client "$name" 1000 info >/dev/null 2>&1 &&
     ! client "$name" 1000 image inspect keep-test >/dev/null 2>&1; then
     pass 'an ephemeral start wipes data kept before'
