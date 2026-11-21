@@ -1,18 +1,22 @@
 #!/bin/sh
+# shellcheck source-path=SCRIPTDIR
 # Runtime test for the session-ssh-agent image with throwaway keys: unlock
 # refuses keys with loose permissions and loads keys with or without a
 # passphrase; a client with only the socket can use the keys but cannot see
-# the key folder; the sidecar has no network and exits after its grace period
-# or once its keys expire. It needs Docker and ssh-keygen on the host.
+# the key folder. The sidecar has no network, serves through key expiry and
+# stops with its broker. It needs Docker and ssh-keygen on the host.
 set -eu
 
 sandbox_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 image=ai-coding-sandbox-session-ssh-agent:test
 prefix=sandbox-ssh-agent-test-$$
+broker=$prefix-broker
 uid=$(id -u)
 gid=$(id -g)
 test_dir=$(mktemp -d)
 failures=0
+# shellcheck source=lifecycle-helper.sh
+. "$sandbox_dir/tests/lifecycle-helper.sh"
 
 cleanup() {
     docker ps -aq --filter "label=$prefix" | xargs -r docker rm -f -v >/dev/null 2>&1 || :
@@ -25,6 +29,9 @@ pass() { printf 'ok   %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; failures=$((failures + 1)); }
 
 docker build --quiet --target session-ssh-agent --tag "$image" "$sandbox_dir" >/dev/null
+lifecycle_build
+lifecycle_start "$broker"
+lifecycle_hold "$broker" "$image"
 
 keys=$test_dir/keys
 mkdir -m 0700 "$keys"
@@ -38,16 +45,15 @@ mkdir "$test_dir/askpass"
 printf '#!/bin/sh\necho test-passphrase\n' > "$test_dir/askpass/pass"
 chmod 0755 "$test_dir/askpass/pass"
 
-# Starts a sidecar with the ssh profile's settings. Arguments: name, then
-# extra docker run options.
+# Starts a sidecar with the ssh profile's settings on the given broker.
 start_agent() {
     name=$1
-    shift
     docker volume create --label "$prefix" "$name-socket" >/dev/null
+    # shellcheck disable=SC2046 # lifecycle_mount prints the two mount arguments.
     docker run -d --name "$name" --label "$prefix" --network none \
         --user "$uid:$gid" --read-only --cap-drop ALL --security-opt no-new-privileges \
         -v "$keys:/keys:ro" -v "$name-socket:/run/ssh-agent" \
-        "$@" "$image" >/dev/null
+        $(lifecycle_mount "$2" services) "$image" >/dev/null
 }
 
 # Runs sandbox-ssh-unlock against sidecar $1 with the scripted passphrase.
@@ -75,17 +81,8 @@ client() {
         --entrypoint sh "$image" -c "$*"
 }
 
-wait_exit() {
-    tries=0
-    while [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = true ]; do
-        tries=$((tries + 1))
-        [ "$tries" -lt "$2" ] || return 1
-        sleep 1
-    done
-}
-
 name=$prefix-main
-start_agent "$name"
+start_agent "$name" "$broker"
 output=$(unlock "$name" --if-needed 2>&1) || fail "unlock failed: $output"
 if printf '%s\n' "$output" | grep -q 'Refusing loose: readable by group or others'; then
     pass 'a key readable by others is refused'
@@ -123,25 +120,42 @@ else
     fail 'the sidecar has a network'
 fi
 
-name=$prefix-grace
-start_agent "$name" -e SANDBOX_SSH_CHECK_INTERVAL=1 -e SANDBOX_SSH_START_GRACE=3
-if wait_exit "$name" 15 && docker logs "$name" 2>&1 | grep -q 'nothing unlocked within 3s'; then
-    pass 'the sidecar exits when nothing is unlocked in its grace period'
+name=$prefix-expiry
+start_agent "$name" "$broker"
+unlock "$name" -e SANDBOX_SSH_KEY_LIFETIME=3s >/dev/null 2>&1 || fail 'expiry: unlock failed'
+sleep 5
+if client "$name" 'ssh-add -l; test "$?" -eq 1' &&
+    [ "$(docker inspect -f '{{.State.Running}}' "$name")" = true ]; then
+    pass 'keys expire while the sidecar keeps serving the socket'
 else
-    fail 'the sidecar did not exit after its grace period'
+    fail 'expected a running sidecar with no keys after expiry'
 fi
 
-name=$prefix-expiry
-start_agent "$name" -e SANDBOX_SSH_CHECK_INTERVAL=1 -e SANDBOX_SSH_START_GRACE=60
-unlock "$name" -e SANDBOX_SSH_KEY_LIFETIME=4 >/dev/null 2>&1 || fail 'expiry: unlock failed'
-if wait_exit "$name" 20 && docker logs "$name" 2>&1 | grep -q 'no keys left'; then
-    pass 'the sidecar exits once its keys expire'
+name=$prefix-drain
+drain_broker=$prefix-drain-broker
+lifecycle_start "$drain_broker"
+start_agent "$name" "$drain_broker"
+docker exec "$name" timeout 10 sh -c 'until test -S /run/ssh-agent/agent.sock; do sleep 0.1; done'
+lifecycle_drain "$drain_broker" &
+drain_pid=$!
+if [ "$(timeout 10 docker wait "$name")" = 0 ] && client "$name" 'test ! -e /run/ssh-agent/agent.sock'; then
+    pass 'the sidecar exits 0 within 10 seconds of drain and removes its socket'
 else
-    fail 'the sidecar kept running after its keys expired'
+    fail 'the sidecar failed to drain cleanly or left its socket behind'
+fi
+wait "$drain_pid" || fail 'the broker failed to drain'
+
+bare_agent=$(docker run -d --label "$prefix" --network none --user "$uid:$gid" \
+    --read-only --cap-drop ALL --security-opt no-new-privileges "$image")
+if [ "$(timeout 15 docker wait "$bare_agent")" = 1 ] &&
+    docker logs "$bare_agent" 2>&1 | grep -Fq 'cannot reach the lifecycle broker'; then
+    pass 'without a broker the sidecar exits 1 within 15 seconds'
+else
+    fail 'expected an unreachable broker error and exit 1'
 fi
 
 name=$prefix-none
-start_agent "$name"
+start_agent "$name" "$broker"
 chmod 0600 "$keys/loose"
 rm "$keys/protected" "$keys/free" "$keys/loose" "$keys/corrupt"
 if ! unlock "$name" >/dev/null 2>&1; then

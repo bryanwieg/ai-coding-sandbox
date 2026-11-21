@@ -120,7 +120,7 @@ RUN apk add --no-cache openssh-client \
     && chmod 0644 /etc/passwd
 COPY --chmod=0755 image/sandbox-ssh-agent image/sandbox-ssh-unlock /usr/local/bin/
 COPY --from=lifecycle-build --chmod=0755 /out/sandbox-lifecycle /usr/local/bin/sandbox-lifecycle
-ENTRYPOINT ["/usr/local/bin/sandbox-ssh-agent"]
+ENTRYPOINT ["/usr/local/bin/sandbox-lifecycle", "run", "ssh-agent", "--", "/usr/local/bin/sandbox-ssh-agent"]
 USER 65534:65534
 
 # Egress proxy, with its configuration built in. It allows the base policy and
