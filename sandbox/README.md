@@ -94,7 +94,7 @@ sandbox/bin/install-shell-functions ~/.zshrc   # or name the file
 | --- | --- |
 | `sandbox --help` (or `-h`) | Show sandbox commands and parameters without starting Docker; works before setup |
 | `sandbox-init [--reference PATH] [--force]` | `sandbox-init-config` from the dedicated init image, offline, in this folder |
-| `sandbox [SERVICE [ARGS...]]` | Without `.sandbox/env`, run `sandbox-init` at a Git repository's root (and stage `.sandbox/`) or in a folder outside any repository; for `claude` and `codex`, first update the installed functions and load them into this shell; approve egress, unlock SSH if enabled, then run the agent with Compose (default `claude`); other services run directly |
+| `sandbox [SERVICE [ARGS...]]` | For `claude` and `codex`, first update the installed functions and load them into this shell; without `.sandbox/env`, run `sandbox-init` at a Git repository's root (and stage `.sandbox/`) or in a folder outside any repository; approve egress, unlock SSH if enabled, then run the agent with Compose (default `claude`); other services run directly |
 | `sandbox-trust` | `sandbox trust`, then reload a running proxy whose policy changed |
 | `sandbox-unlock` | Unlock SSH keys for the running session group or for a session you start within two minutes |
 | `sandbox-stop` | Stop the project's sessions and services, keeping its volumes |
