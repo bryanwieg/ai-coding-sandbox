@@ -22,6 +22,8 @@ A session is a set of Compose services, all from the sandbox's images:
   the boundary: the image sets that as Codex's default and as
   `CODEX_BUILD_SANDBOX`; do not pass `--sandbox read-only` or
   `workspace-write`, under which every command fails.
+- **`lifecycle`**: the broker that tracks the project's active sessions and
+  stops the group after the last session ends.
 - **`egress-proxy`**: the only service with an Internet uplink. Every request
   leaves through it, and it allows only the base policy plus the project's
   approved additions.
@@ -36,9 +38,9 @@ A session is a set of Compose services, all from the sandbox's images:
   policy), `ssh-unlock` (loads SSH keys), and `*-state-init` (prepares
   volumes before each start).
 
-The proxy and the daemon belong to the project: several sessions of either
-agent in the same project share them, and each stops shortly after the last
-session ends.
+Sessions of either agent in the same project share one session group.
+The broker starts first and stops the group's services shortly after the
+last session ends.
 
 ### Volumes
 
@@ -47,9 +49,10 @@ session ends.
 | Agent state | `~/.claude` and `~/.codex`, one volume each | Shared by all the user's projects and both agents; sign-ins, sessions, memory, settings, plugins, and the started agent's `gh` login (`GH_CONFIG_DIR`) |
 | `cache` | `/cache` | This project only, persists; Go's `GOPATH` and caches, VS Code's server, and other build caches |
 | `trust` | `/run/sandbox-trust`, read-only | Approved policy hashes, written only by `trust` on the host |
+| `lifecycle` | `/run/sandbox-lifecycle`, read-only | The agent's socket to the broker, in a volume that persists with the project |
 | `docker-certs` | `/run/docker-certs`, read-only | The client certificate for the session daemon |
 | `ssh-socket` | `/run/ssh-agent`, read-only | The ssh-agent's socket |
-| `docker-data` | Session daemon only | Its images and containers; wiped when it stops unless `SANDBOX_DOCKER_DATA=persistent` |
+| `docker-data` | Session daemon only | Its images and containers, wiped when the group ends unless `SANDBOX_DOCKER_DATA=persistent` |
 
 ## Files
 
@@ -237,11 +240,11 @@ project.
 
 - When `DOCKER_HOST` is set, `docker` and `docker compose` drive a rootless
   daemon that belongs to this project and runs in its own container. It
-  starts empty and is wiped when the last session in the project ends:
-  images, containers, volumes and build cache do not persist. When the user
-  set `SANDBOX_DOCKER_DATA=persistent`, they persist between sessions
-  instead; do not rely on what an earlier session left there without
-  checking it, and remove what a task no longer needs.
+  starts empty by default and wipes its images, containers, volumes and
+  build cache when the session group ends. With
+  `SANDBOX_DOCKER_DATA=persistent`, that data persists between groups.
+  Check anything an earlier session left before using it, and remove what a
+  task no longer needs.
 - Images pull from Docker Hub, GHCR and LSCR through the proxy. Containers
   and builds get the HTTPS proxy automatically, so the network rules apply to
   them too. When the user set `SANDBOX_DAEMON_EGRESS=direct` (startup warns
@@ -281,8 +284,8 @@ project.
   container as root, or as another user with `group_add: ["0"]`.
 - The socket reaches this same daemon, nothing else: containers it starts
   follow every rule above, and project bind mounts from them work at the
-  same path. Socket clients do not keep the daemon running; it still stops
-  when the last session ends.
+  same path. The daemon ends with the session group regardless of which
+  clients are connected to its socket.
 - Root in a container maps to the user's own account, so files containers
   create in the project belong to the user. Privileged containers are
   refused.

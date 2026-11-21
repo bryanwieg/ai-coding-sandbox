@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck source-path=SCRIPTDIR
 # Runtime test for the session startup hooks in the agent base image, with
 # stubbed agent, GitHub and ssh-add commands: .sandbox/env and SSH key
 # refusals; egress policy and SSH warnings; logins only when signed
@@ -7,16 +8,30 @@ set -eu
 
 sandbox_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 image=ai-coding-sandbox-base:test
+prefix=sandbox-init-test-$$
+held=$prefix-held
 uid=$(id -u)
 gid=$(id -g)
 test_dir=$(mktemp -d)
 failures=0
-trap 'rm -rf "$test_dir"' EXIT HUP INT TERM
+# shellcheck source=lifecycle-helper.sh
+. "$sandbox_dir/tests/lifecycle-helper.sh"
+
+cleanup() {
+    docker ps -aq --filter "label=$prefix" | xargs -r docker rm -f -v >/dev/null 2>&1 || :
+    docker volume ls -q --filter "label=$prefix" | xargs -r docker volume rm >/dev/null 2>&1 || :
+    rm -rf "$test_dir"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 
 pass() { printf 'ok   %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; failures=$((failures + 1)); }
 
 docker build --quiet --target base --tag "$image" "$sandbox_dir" >/dev/null
+lifecycle_build
+lifecycle_start "$held"
+lifecycle_hold "$held" "$image"
 
 reference=$test_dir/reference
 project=$reference/src/demo
@@ -43,7 +58,8 @@ stub agent-auth 'case "$1" in status) exit "${STUB_AGENT:-0}" ;; login) echo LOG
 hook() {
     name=$1
     shift
-    docker run --rm --user "$uid:$gid" \
+    # shellcheck disable=SC2046
+    docker run --rm --label "$prefix" --user "$uid:$gid" $(lifecycle_mount "$held" agents) \
         -v "$reference:/reference:ro" -v "$project:/workspace/demo" \
         -v "$project/.sandbox:/workspace/demo/.sandbox:ro" -w /workspace/demo \
         -v "$trust:/run/sandbox-trust:ro" -v "$stubs:/stubs:ro" \

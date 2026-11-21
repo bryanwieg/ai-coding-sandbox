@@ -33,8 +33,9 @@ project's own instructions; where they conflict, these rules win.
   container besides the project, such as its certificates or data, and do
   not hand the socket to images you would not let run Docker yourself.
 - Do not stop or interfere with the sandbox's own processes and services: the
-  egress proxy and its lease (`sandbox-proxy-lease`), the session daemon and
-  its lease (`sandbox-docker-lease`), the port forwarder, and the ssh-agent.
+  lifecycle broker (the `lifecycle` service) and `sandbox-lifecycle`, which
+  runs each session process, the egress proxy, the session daemon, the port
+  forwarder, and the ssh-agent.
 - Do not create tunnels, VPNs, reverse proxies, remote shells, or listeners
   that expose a service outside its intended Docker network. Exception: the
   ports the user set in the `SANDBOX_PUBLISH_*` slots are forwarded to the host from

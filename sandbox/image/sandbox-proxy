@@ -3,68 +3,9 @@
 # from the base policy and the project's approved additions, and the host's
 # sandbox command reloads it in place with sandbox-proxy-config --reload when
 # the approved policy changes.
-# Each session holds an idle connection to port 3128 (sandbox-proxy-lease), so
-# the proxy stops once SANDBOX_PROXY_IDLE_CHECKS consecutive checks, one every
-# SANDBOX_PROXY_IDLE_INTERVAL seconds, find no connection open and none
-# accepted since the previous check, or when none arrives within
-# SANDBOX_PROXY_START_GRACE seconds. A launch hold, /tmp/launch-hold touched
-# by the host's sandbox command just before it starts a session, counts as
-# activity for SANDBOX_PROXY_LAUNCH_HOLD seconds, so the proxy does not stop
-# between that command seeing it running and the new session connecting.
+# The image entrypoint runs this script under the lifecycle broker so Squid
+# stops with the session group.
 set -eu
 
-interval=${SANDBOX_PROXY_IDLE_INTERVAL:-1}
-checks=${SANDBOX_PROXY_IDLE_CHECKS:-10}
-grace=${SANDBOX_PROXY_START_GRACE:-120}
-hold=${SANDBOX_PROXY_LAUNCH_HOLD:-30}
-rendered_config=/tmp/squid.conf
-
 sandbox-proxy-config
-squid -N -f "$rendered_config" &
-squid=$!
-trap 'kill -TERM "$squid" 2>/dev/null || :' TERM INT
-
-# Connections accepted so far (PassiveOpens in this network namespace), so a
-# session shorter than one check still counts as activity.
-accepted() {
-    awk '/^Tcp:/ { if (!h) { for (i = 1; i <= NF; i++) if ($i == "PassiveOpens") f = i; h = 1 } else print $f }' /proc/net/snmp
-}
-
-# An established connection with local port 3128 (0C38) in /proc/net/tcp*.
-connected() {
-    awk '$2 ~ /:0C38$/ && $4 == "01" { found = 1 } END { exit !found }' /proc/net/tcp /proc/net/tcp6 2>/dev/null
-}
-
-held() {
-    [ -f /tmp/launch-hold ] &&
-        [ $(($(date +%s) - $(stat -c %Y /tmp/launch-hold))) -lt "$hold" ]
-}
-
-seen=false
-idle=0
-elapsed=0
-last=$(accepted)
-while kill -0 "$squid" 2>/dev/null; do
-    sleep "$interval"
-    elapsed=$((elapsed + interval))
-    now=$(accepted)
-    if connected || [ "$now" != "$last" ]; then
-        seen=true
-        idle=0
-        last=$now
-    elif held; then
-        idle=0
-    elif [ "$seen" = true ]; then
-        idle=$((idle + 1))
-        if [ "$idle" -ge "$checks" ]; then
-            echo 'sandbox-proxy: no session connected; stopping the proxy.' >&2
-            kill -TERM "$squid" 2>/dev/null || :
-            break
-        fi
-    elif [ "$elapsed" -ge "$grace" ]; then
-        echo "sandbox-proxy: no session connected within ${grace}s; stopping the proxy." >&2
-        kill -TERM "$squid" 2>/dev/null || :
-        break
-    fi
-done
-wait "$squid" || :
+exec squid -N -f /tmp/squid.conf
