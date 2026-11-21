@@ -24,8 +24,10 @@ ends 2 s after its last agent, plus each service's grace.
 - Verified: `sandbox-dockerd` adds its default flags only when it gets no
   arguments or only flags (`[ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]`); with the
   wrapper in front it still gets no arguments from Compose.
-- Verified: squid's `shutdown_lifetime` is unset in `sandbox/squid/squid.conf`
-  (default 30 s, longer than the proxy's 5 s grace).
+- Verified (03.1 builder, 2026-11-21): `sandbox/image/sandbox-proxy-config`
+  appends `shutdown_lifetime 1 seconds` to the rendered config on start and
+  reload, below the proxy's 5 s grace; `squid.conf` itself leaves it unset.
+  (The planning read missed the renderer.)
 - Verified: `ssh-agent -D` removes its socket when it gets SIGTERM, and
   then exits with status 2 (OpenSSH's `cleanup_exit(2)`; probe in
   `alpine:3.24.4` with `openssh-client`, 2026-11-21). So the script must
@@ -40,9 +42,9 @@ ends 2 s after its last agent, plus each service's grace.
   of this phase, `sandbox/shell/sandbox.sh` and
   `sandbox/tests/test-shell-functions.sh` (phase 04), and the READMEs and
   `session-guide.md` (phase 04). Nothing outside this repository uses them.
-- Open: squid exits within 2 s of SIGTERM with `shutdown_lifetime 2
-  seconds` while a CONNECT tunnel is open. Check in 03.1's test (an open
-  tunnel during the drain); if it does not, lower the value to 1 second.
+- Open: squid exits within 2 s of SIGTERM with the existing
+  `shutdown_lifetime 1 seconds` while a CONNECT tunnel is open. Check in
+  03.1's test (an open tunnel during the drain).
 
 ## Stages
 
@@ -83,17 +85,15 @@ Contracts:
   /tmp/squid.conf`. Header comment: config rendering and in-place reloads
   (keep that part), and that the image's entrypoint runs it under the
   lifecycle broker, which stops it with the session group.
-- `sandbox/squid/squid.conf`: `shutdown_lifetime 2 seconds` after
-  `pid_filename`.
 
 Files:
 - `sandbox/Dockerfile`
 - `sandbox/image/sandbox-proxy`
-- `sandbox/squid/squid.conf`
 - `sandbox/tests/test-session-proxy.sh`
 
 Work:
-1. Change the entrypoint, the script and squid.conf as above.
+1. Change the entrypoint and the script as above; no squid setting
+   changes (the renderer's 1 s `shutdown_lifetime` stays).
 2. In the test: source the helper, build the broker, start one broker and
    `lifecycle_hold` it with the proxy image under test; `start_proxy` adds
    `$(lifecycle_mount "$proxy_broker" services)`, where `proxy_broker`
@@ -366,3 +366,6 @@ retired code path and the session rules, a permissions document)
 - 2026-11-20: Stages are sequential (shared Dockerfile). The leases go last
   so that each commit leaves sessions working: until 03.4 the agent
   entrypoint still holds leases the not-yet-switched services count.
+- 2026-11-21 (03.1 builder stop): the renderer already appends
+  `shutdown_lifetime 1 seconds`; the planned `squid.conf` change would have
+  duplicated it. Kept the 1 s value, dropped `squid.conf` from 03.1.
