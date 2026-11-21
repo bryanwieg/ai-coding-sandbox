@@ -2,7 +2,7 @@
 
 Implement with the implement-in-phases skill; do not build from this file
 without it. Model tiers map to models in [models.md](models.md).
-Status: planned
+Status: built 380f14f
 Before: no lifecycle code exists on this branch; services end themselves
 through idle counting and leases (see [design.md](design.md#problem)).
 After: `sandbox/lifecycle/` holds the complete `sandbox-lifecycle` Go program
@@ -36,9 +36,9 @@ yet, so session behavior is unchanged.
 
 | Stage | Goal | Tier | Order | Status |
 | --- | --- | --- | --- | --- |
-| 01.1 | Package, contracts, CLI and test runner, with stub bodies | top | first | planned |
-| 01.2 | Broker: states, sockets, pools, control socket, drain | top | after 01.1, parallel with 01.3 | planned |
-| 01.3 | Wrapper: join, rejoin, child supervision, both roles | top | after 01.1, parallel with 01.2 | planned |
+| 01.1 | Package, contracts, CLI and test runner, with stub bodies | top | first | done |
+| 01.2 | Broker: states, sockets, pools, control socket, drain | top | after 01.1, parallel with 01.3 | done |
+| 01.3 | Wrapper: join, rejoin, child supervision, both roles | top | after 01.1, parallel with 01.2 | done |
 
 ## 01.1 Package, contracts, CLI and test runner
 
@@ -194,6 +194,14 @@ Contracts: as defined in 01.1; no new ones. Behavior:
   socket's pool is full, or the state is `draining`. Otherwise write `A`
   (write deadline `joinTimeout`), record the member, and block reading: any
   byte, EOF or error removes it.
+- Pending handshakes (phase review fix): each role listener allows at most
+  its `pool` connections still in the join handshake at once; a connection
+  accepted beyond that is closed at once, without a reply. The daemon
+  socket is reachable from daemon workloads, so this keeps them from
+  exhausting the broker's descriptors and starving the other sockets.
+- Accept errors: a temporary one (`EMFILE`, `ENFILE`, `ECONNABORTED`,
+  `EINTR`) is logged and retried after `retryInterval`; only a closed
+  listener ends that accept loop. `serve` never returns because of one.
 - States: start `starting` with deadline `now + startup`. An agent joining
   sets `active` and clears the deadline. The last agent leaving sets `idle`
   with deadline `now + idle`. Reaching a deadline, or a control `stop`,
@@ -437,3 +445,18 @@ repository)
   mid-start when an SSH passphrase prompt used most of the 120 s startup
   window. A services-socket join in `starting` now resets the window;
   daemon-socket joins do not (daemon workloads must not extend a lifetime).
+- Plan start: 9e21c14
+- 2026-11-21 (user): Claude usage is nearly exhausted, so every phase 01
+  stage goes to Codex (`gpt-6.2-astra` high for the top tier), overriding
+  the narrow-stage-only routing. Codex builds in its workspace-write
+  sandbox; the orchestrator reruns each stage's "Done when" tests itself.
+- 2026-11-21: Codex model list checked before dispatch: the tier models in
+  `models-codex.md` are still offered; no regeneration needed.
+- 2026-11-21 (phase review, Codex gpt-6.2-astra high, used in place of the
+  unavailable Claude `top` model to save Claude usage): added the pending
+  handshake bound and temporary accept-error handling to 01.2; fixes for an
+  empty status reply (01.2), stop events during admission and child start,
+  and repeated agent SIGTERM (01.3), and a formatter simplification.
+- 2026-11-21: phase review fixes committed as de323bb (01.2) and 380f14f
+  (01.3); verified by `go test -race -count=10`, the lifecycle runner and
+  `check-sandbox`, all passing. The fixes were not re-reviewed.
