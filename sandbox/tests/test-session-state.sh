@@ -3,15 +3,14 @@
 # Runtime test, in the agent base image, for the session state services and
 # entrypoint: sandbox-initialize-state's if-needed ownership,
 # sandbox-migrate-state copying old state only into empty volumes, and the
-# entrypoint's broker membership, proxy and Docker leases, and Docker
-# variables without a daemon.
+# entrypoint's broker membership, Docker variables and session processes.
 set -eu
 
 sandbox_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 image=ai-coding-sandbox-base:test
 prefix=sandbox-state-test-$$
 held=$prefix-held
-stubs=$(mktemp -d)
+broker_err=$(mktemp)
 failures=0
 
 # shellcheck source=lifecycle-helper.sh
@@ -20,7 +19,7 @@ failures=0
 cleanup() {
     docker ps -aq --filter "label=$prefix" | xargs -r docker rm -f -v >/dev/null 2>&1 || :
     docker volume ls -q --filter "label=$prefix" | xargs -r docker volume rm >/dev/null 2>&1 || :
-    rm -rf "$stubs"
+    rm -f "$broker_err"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
@@ -177,47 +176,41 @@ else
     fail 'migration without a target volume succeeded'
 fi
 
-# The entrypoint, for any command: no daemon clears the Docker variables, and
-# a daemon gets a lease that reconnects when its connection drops. The stub
-# docker command records each connection.
 entrypoint_bare() {
     docker run --label "$prefix" --user "$(id -u):$(id -g)" --network none \
         -e SANDBOX_AGENT=claude -e SANDBOX_SESSION=1 \
         -e DOCKER_HOST=tcp://docker:2376 -e DOCKER_TLS_VERIFY=1 -e DOCKER_CERT_PATH=/run/docker-certs \
-        -e PATH=/stubs:/usr/local/bin:/usr/bin:/bin "$@"
+        -e SANDBOX_DOCKER_SOCKET=/var/run/docker.sock "$@"
 }
 entrypoint() {
     # shellcheck disable=SC2046
     entrypoint_bare --rm $(lifecycle_mount "$held" agents) "$@"
 }
-printf '#!/bin/sh\necho call >> /tmp/docker-calls\nsleep 1\nexit 1\n' > "$stubs/docker"
-chmod 0755 "$stubs/docker"
 # shellcheck disable=SC2016
-output=$(entrypoint -v "$stubs:/stubs:ro" "$image" sh -c 'sleep 2; env | grep ^DOCKER_; cat /tmp/docker-calls 2>/dev/null; :')
-if [ -z "$output" ]; then
-    pass 'sessions without a daemon run without DOCKER_HOST or a Docker lease'
+if entrypoint "$image" sh -c '
+    test -z "${DOCKER_HOST+x}${DOCKER_TLS_VERIFY+x}${DOCKER_CERT_PATH+x}${SANDBOX_DOCKER_SOCKET+x}"
+'; then
+    pass 'sessions without a daemon clear the Docker variables'
 else
-    fail "without a daemon: $output"
+    fail 'a session without a daemon kept Docker variables'
 fi
 # shellcheck disable=SC2016
-output=$(entrypoint -v "$stubs:/stubs:ro" --add-host docker:127.0.0.1 "$image" sh -c 'sleep 6; env | grep -c ^DOCKER_; wc -l < /tmp/docker-calls')
-if [ "$(printf '%s\n' "$output" | sed -n 1p)" = 3 ] && [ "$(printf '%s\n' "$output" | sed -n 2p)" -ge 2 ]; then
-    pass 'sessions with a daemon keep DOCKER_HOST, and the lease reconnects'
+if entrypoint --add-host docker:127.0.0.1 "$image" sh -eu -c '
+    test "$DOCKER_HOST" = tcp://docker:2376
+    test "$DOCKER_TLS_VERIFY" = 1
+    test "$DOCKER_CERT_PATH" = /run/docker-certs
+    test "$SANDBOX_DOCKER_SOCKET" = /var/run/docker.sock
+'; then
+    pass 'sessions with a daemon keep the configured Docker variables'
 else
-    fail "with a daemon: $output"
+    fail 'a session with a daemon changed the Docker variables'
 fi
-if [ "$(entrypoint "$image" sh -c 'sleep 1; ps -eo args | grep -c "[s]andbox-proxy-lease"')" = 1 ]; then
-    pass 'sessions hold a proxy lease'
+
+processes=$(entrypoint --add-host docker:127.0.0.1 "$image" ps -eo args)
+if printf '%s\n' "$processes" | grep -Eq 'sandbox-[^[:space:]/]+-lease'; then
+    fail "a session started a lease process: $processes"
 else
-    fail 'sessions hold no proxy lease'
-fi
-# shellcheck disable=SC2016
-if [ -z "$(docker run --rm --network none -v "$stubs:/stubs:ro" -e PATH=/stubs:/usr/local/bin:/usr/bin:/bin \
-    -e DOCKER_HOST=tcp://docker:2376 --add-host docker:127.0.0.1 "$image" \
-    sh -c 'sleep 2; cat /tmp/docker-calls 2>/dev/null; ps -eo args | grep "[s]andbox-proxy-lease"; :')" ]; then
-    pass 'the image outside a session starts no leases'
-else
-    fail 'the image outside a session started a lease'
+    pass 'a session starts no lease processes'
 fi
 
 # Only this agent joins the fresh broker, so its exit starts the idle window.
@@ -248,11 +241,11 @@ fi
 
 bare_id=$(entrypoint_bare -d "$image" true)
 bare_exit=$(timeout 15 docker wait "$bare_id") || bare_exit="docker wait exited $?"
-docker logs "$bare_id" >/dev/null 2>"$stubs/broker.err"
-if [ "$bare_exit" = 1 ] && grep -Fq 'cannot reach the lifecycle broker' "$stubs/broker.err"; then
+docker logs "$bare_id" >/dev/null 2>"$broker_err"
+if [ "$bare_exit" = 1 ] && grep -Fq 'cannot reach the lifecycle broker' "$broker_err"; then
     pass 'a session without a broker exits 1 within 15 seconds and names the error'
 else
-    fail "unreachable broker: exit $bare_exit, stderr: $(cat "$stubs/broker.err")"
+    fail "unreachable broker: exit $bare_exit, stderr: $(cat "$broker_err")"
 fi
 
 if [ "$(docker run --rm --network none -e SANDBOX_AGENT=claude "$image" echo standalone)" = standalone ]; then
