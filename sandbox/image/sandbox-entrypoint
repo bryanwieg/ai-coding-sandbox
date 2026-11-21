@@ -1,4 +1,6 @@
 #!/bin/sh
+# Set up the command's runtime identity. In sessions, connect the leases and
+# run the command as a member of the lifecycle broker's session group.
 set -eu
 
 runtime_uid=$(id -u)
@@ -67,4 +69,9 @@ until [ -z "$lease_ports" ] || leases_connected || [ "$tries" -ge 20 ]; do
     tries=$((tries + 1))
     sleep 0.1
 done
+# In a session the agent's lifetime is part of the project's session
+# group: the lifecycle broker counts this container until the command ends.
+if [ "${SANDBOX_SESSION:-}" = 1 ]; then
+    exec sandbox-lifecycle run "${SANDBOX_AGENT:-}" -- "$@"
+fi
 exec "$@"

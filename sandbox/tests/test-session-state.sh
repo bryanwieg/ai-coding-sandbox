@@ -1,19 +1,47 @@
 #!/bin/sh
+# shellcheck source-path=SCRIPTDIR
 # Runtime test, in the agent base image, for the session state services and
 # entrypoint: sandbox-initialize-state's if-needed ownership,
 # sandbox-migrate-state copying old state only into empty volumes, and the
-# entrypoint's proxy and Docker leases, or cleared Docker variables without a
-# daemon.
+# entrypoint's broker membership, proxy and Docker leases, and Docker
+# variables without a daemon.
 set -eu
 
 sandbox_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 image=ai-coding-sandbox-base:test
+prefix=sandbox-state-test-$$
+held=$prefix-held
+stubs=$(mktemp -d)
 failures=0
+
+# shellcheck source=lifecycle-helper.sh
+. "$sandbox_dir/tests/lifecycle-helper.sh"
+
+cleanup() {
+    docker ps -aq --filter "label=$prefix" | xargs -r docker rm -f -v >/dev/null 2>&1 || :
+    docker volume ls -q --filter "label=$prefix" | xargs -r docker volume rm >/dev/null 2>&1 || :
+    rm -rf "$stubs"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 
 pass() { printf 'ok   %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; failures=$((failures + 1)); }
 
 docker build --quiet --target base --tag "$image" "$sandbox_dir" >/dev/null
+lifecycle_build
+lifecycle_start "$held"
+lifecycle_hold "$held" "$image"
+
+# The broker's image seeds a fresh volume with socket directories owned by 13:13.
+# shellcheck disable=SC2046
+listing=$(docker run --rm --network none $(lifecycle_mount "$held" agents) \
+    --entrypoint ls "$image" -lnd /run/sandbox-lifecycle)
+if printf '%s\n' "$listing" | awk '$3 == 13 && $4 == 13 { owned = 1 } END { exit !owned }'; then
+    pass "the agents directory is owned by 13:13 ($listing)"
+else
+    fail "agents directory ownership: $listing"
+fi
 
 # as_root SCRIPT: runs SCRIPT with the capabilities the Compose services add,
 # on tmpfs paths, and prints its output.
@@ -152,13 +180,16 @@ fi
 # The entrypoint, for any command: no daemon clears the Docker variables, and
 # a daemon gets a lease that reconnects when its connection drops. The stub
 # docker command records each connection.
-entrypoint() {
-    docker run --rm --user "$(id -u):$(id -g)" --network none \
-        -e SANDBOX_SESSION=1 -e DOCKER_HOST=tcp://docker:2376 -e DOCKER_TLS_VERIFY=1 -e DOCKER_CERT_PATH=/run/docker-certs \
+entrypoint_bare() {
+    docker run --label "$prefix" --user "$(id -u):$(id -g)" --network none \
+        -e SANDBOX_AGENT=claude -e SANDBOX_SESSION=1 \
+        -e DOCKER_HOST=tcp://docker:2376 -e DOCKER_TLS_VERIFY=1 -e DOCKER_CERT_PATH=/run/docker-certs \
         -e PATH=/stubs:/usr/local/bin:/usr/bin:/bin "$@"
 }
-stubs=$(mktemp -d)
-trap 'rm -rf "$stubs"' EXIT HUP INT TERM
+entrypoint() {
+    # shellcheck disable=SC2046
+    entrypoint_bare --rm $(lifecycle_mount "$held" agents) "$@"
+}
 printf '#!/bin/sh\necho call >> /tmp/docker-calls\nsleep 1\nexit 1\n' > "$stubs/docker"
 chmod 0755 "$stubs/docker"
 # shellcheck disable=SC2016
@@ -188,6 +219,50 @@ if [ -z "$(docker run --rm --network none -v "$stubs:/stubs:ro" -e PATH=/stubs:/
 else
     fail 'the image outside a session started a lease'
 fi
+
+# Only this agent joins the fresh broker, so its exit starts the idle window.
+fresh=$prefix-fresh
+lifecycle_start "$fresh"
+# shellcheck disable=SC2046
+agent_id=$(entrypoint_bare -d $(lifecycle_mount "$fresh" agents) "$image" sleep 4)
+tries=0
+until [ "$(lifecycle_field "$fresh" agents)" = claude ] || [ "$tries" -ge 50 ]; do
+    sleep 0.1
+    tries=$((tries + 1))
+done
+if [ "$tries" -lt 50 ] && [ "$(lifecycle_field "$fresh" state)" = active ] &&
+    [ "$(timeout 10 docker wait "$agent_id")" = 0 ]; then
+    # shellcheck disable=SC2016 # The polling shell receives the broker name as $1.
+    if timeout 1 sh -c '
+        until docker exec "$1" /usr/local/bin/sandbox-lifecycle status | grep -Fxq state=idle; do
+            sleep 0.1
+        done
+    ' sh "$fresh"; then
+        pass 'a session joins as claude and leaves the broker idle when it exits'
+    else
+        fail 'the broker did not become idle within one second of agent exit'
+    fi
+else
+    fail 'the session did not join as claude, become active and exit successfully'
+fi
+
+bare_id=$(entrypoint_bare -d "$image" true)
+bare_exit=$(timeout 15 docker wait "$bare_id") || bare_exit="docker wait exited $?"
+docker logs "$bare_id" >/dev/null 2>"$stubs/broker.err"
+if [ "$bare_exit" = 1 ] && grep -Fq 'cannot reach the lifecycle broker' "$stubs/broker.err"; then
+    pass 'a session without a broker exits 1 within 15 seconds and names the error'
+else
+    fail "unreachable broker: exit $bare_exit, stderr: $(cat "$stubs/broker.err")"
+fi
+
+if [ "$(docker run --rm --network none -e SANDBOX_AGENT=claude "$image" echo standalone)" = standalone ]; then
+    pass 'a command runs outside a session without a broker mount'
+else
+    fail 'a standalone command needed a broker'
+fi
+status=0
+entrypoint "$image" sh -c 'exit 7' || status=$?
+if [ "$status" = 7 ]; then pass "the session returns the command's exit status"; else fail "command exit: $status"; fi
 
 # Plugins such as Ponytail write below XDG_CONFIG_HOME even when HOME is
 # read-only. Both agents share Claude's state folder for it. Exercise both
