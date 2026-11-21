@@ -1,7 +1,10 @@
 #!/bin/sh
 # Accept the one-time bypass-permissions dialog. The container is the security
 # boundary, as with Codex's automatic approval, so Claude Code's own permission
-# prompts and bubblewrap sandbox stay off. Other user settings are preserved.
+# prompts and bubblewrap sandbox stay off. Without a status line, or with the
+# earlier hand-set capture, set one that saves Claude's plan usage to
+# claude-usage.json and shows ponytail's status line when it is installed.
+# Other user settings, including any other status line, are preserved.
 set -eu
 
 state_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -16,7 +19,23 @@ else
     source_file=/dev/null
 fi
 
-if jq -s '(.[0] // {}) | .skipDangerousModePermissionPrompt = true' \
+capture=$(cat <<'EOF'
+d="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; t="$d/claude-usage.json.$$"; find "$d" -maxdepth 1 -name 'claude-usage.json.*' -mmin +1 -delete 2>/dev/null; cat > "$t"; p="$d/ponytail-statusline.sh"; [ -f "$p" ] || p="$d/plugins/marketplaces/ponytail/hooks/ponytail-statusline.sh"; if [ -f "$p" ]; then bash "$p" < "$t"; fi; if grep -q '"rate_limits"' "$t"; then mv "$t" "$d/claude-usage.json"; else rm -f "$t"; fi
+EOF
+)
+# The capture users set by hand before the sandbox set one; it is replaced.
+hand_set=$(cat <<'EOF'
+d="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; t="$d/claude-usage.json.$$"; find "$d" -maxdepth 1 -name 'claude-usage.json.*' -mmin +1 -delete 2>/dev/null; cat > "$t"; bash "$d/ponytail-statusline.sh" < "$t"; if grep -q '"rate_limits"' "$t"; then mv "$t" "$d/claude-usage.json"; else rm -f "$t"; fi
+EOF
+)
+
+if jq -s --arg capture "$capture" --arg hand_set "$hand_set" '
+    (.[0] // {})
+    | .skipDangerousModePermissionPrompt = true
+    | if .statusLine == null
+        or ((.statusLine | type) == "object" and .statusLine.command == $hand_set)
+      then .statusLine = {type: "command", command: $capture}
+      else . end' \
     "$source_file" > "$temporary_file"; then
     mv "$temporary_file" "$settings_file"
 else
