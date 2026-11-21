@@ -1,7 +1,7 @@
 #!/bin/sh
+# shellcheck disable=SC2154 # sandbox_dir and prefix come from the caller.
 # Sourced by image tests. The caller sets sandbox_dir and prefix, and removes
 # containers and volumes with that label on exit.
-: "${sandbox_dir:?}" "${prefix:?}"
 lifecycle_image=ai-coding-sandbox-session-lifecycle:test
 
 lifecycle_build() {
