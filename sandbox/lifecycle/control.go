@@ -59,5 +59,8 @@ func requestControl(path, line string) (string, error) {
 		return "", err
 	}
 	reply, err := io.ReadAll(conn)
+	if err == nil && len(reply) == 0 {
+		return "", io.ErrUnexpectedEOF
+	}
 	return string(reply), err
 }

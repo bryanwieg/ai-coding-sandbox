@@ -144,15 +144,17 @@ func readJoin(reader *bufio.Reader) (string, error) {
 	return parseJoin(string(line[:len(line)-1]))
 }
 
-func (b *broker) handleMember(conn net.Conn, spec socketSpec) {
+func (b *broker) handleMember(conn net.Conn, spec socketSpec, pending <-chan struct{}) {
 	conn.SetReadDeadline(time.Now().Add(joinTimeout))
 	reader := bufio.NewReaderSize(conn, maxJoinLine)
 	name, err := readJoin(reader)
 	conn.SetWriteDeadline(time.Now().Add(joinTimeout))
 	if err != nil || !b.admit(conn, spec, name) {
 		conn.Write([]byte{msgRefuse})
+		<-pending
 		return
 	}
+	<-pending
 	conn.SetReadDeadline(time.Time{})
 	reader.ReadByte() // Also consumes any byte buffered alongside the join.
 	b.leave(conn)
@@ -173,18 +175,43 @@ func listenSocket(path string, mode os.FileMode) (net.Listener, error) {
 	return listener, nil
 }
 
-// Canceling ctx interrupts every handler, including incomplete handshakes.
-func accept(ctx context.Context, listener net.Listener, handle func(net.Conn), workers *sync.WaitGroup) error {
+// A nil spec identifies the broker's private control listener.
+func (b *broker) accept(listener net.Listener, spec *socketSpec, workers *sync.WaitGroup) {
+	var pending chan struct{}
+	if spec != nil {
+		pending = make(chan struct{}, spec.pool)
+	}
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			return err
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			fmt.Fprintln(os.Stderr, "sandbox-lifecycle: accept:", err)
+			select {
+			case <-b.ctx.Done():
+				return
+			case <-time.After(retryInterval):
+				continue
+			}
+		}
+		if pending != nil {
+			select {
+			case pending <- struct{}{}:
+			default:
+				conn.Close()
+				continue
+			}
 		}
 		workers.Go(func() {
 			defer conn.Close()
-			stop := context.AfterFunc(ctx, func() { conn.Close() })
+			stop := context.AfterFunc(b.ctx, func() { conn.Close() })
 			defer stop()
-			handle(conn)
+			if spec == nil {
+				b.handleControl(conn)
+			} else {
+				b.handleMember(conn, *spec, pending)
+			}
 		})
 	}
 }
@@ -194,7 +221,7 @@ func accept(ctx context.Context, listener net.Listener, handle func(net.Conn), w
 func serve(ctx context.Context, cfg brokerConfig) error {
 	ctx, cancel := context.WithCancel(ctx)
 	b := &broker{ctx: ctx, cfg: cfg, wake: make(chan struct{}, 1)}
-	listeners := make(map[net.Listener]func(net.Conn))
+	listeners := make(map[net.Listener]*socketSpec)
 	var workers sync.WaitGroup
 	defer func() {
 		cancel()
@@ -213,20 +240,19 @@ func serve(ctx context.Context, cfg brokerConfig) error {
 		if err != nil {
 			return err
 		}
-		listeners[l] = func(conn net.Conn) { b.handleMember(conn, spec) }
+		listeners[l] = &spec
 	}
 	control, err := listenSocket(cfg.control, 0o600)
 	if err != nil {
 		return err
 	}
-	listeners[control] = b.handleControl
+	listeners[control] = nil
 
 	b.state = stateStarting
 	b.deadline = time.Now().Add(cfg.startup)
 	fmt.Fprintln(os.Stderr, "sandbox-lifecycle:", b.state)
-	failed := make(chan error, len(listeners))
-	for l, handle := range listeners {
-		workers.Go(func() { failed <- accept(ctx, l, handle, &workers) })
+	for l, spec := range listeners {
+		workers.Go(func() { b.accept(l, spec, &workers) })
 	}
 
 	for ctx.Err() == nil {
@@ -255,8 +281,6 @@ func serve(ctx context.Context, cfg brokerConfig) error {
 		case <-ctx.Done():
 		case <-b.wake:
 		case <-expires:
-		case err := <-failed:
-			return err
 		}
 	}
 	return nil

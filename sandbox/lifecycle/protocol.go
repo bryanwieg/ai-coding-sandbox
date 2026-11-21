@@ -111,12 +111,9 @@ func (s status) format() string {
 	if s.joinable {
 		joinable = "yes"
 	}
-	var seconds int64
-	if (s.state == stateStarting || s.state == stateIdle) && s.remaining > 0 {
-		seconds = int64(s.remaining / time.Second)
-		if s.remaining%time.Second != 0 {
-			seconds++
-		}
+	seconds := int64(s.remaining / time.Second)
+	if s.remaining%time.Second > 0 {
+		seconds++
 	}
 	return fmt.Sprintf("state=%s\njoinable=%s\nremaining=%d\nagents=%s\nservices=%s\n",
 		s.state, joinable, seconds, strings.Join(s.agents, " "), strings.Join(s.services, " "))

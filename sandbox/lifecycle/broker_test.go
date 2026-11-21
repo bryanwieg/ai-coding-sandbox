@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -234,8 +235,8 @@ func TestBrokerControl(t *testing.T) {
 	if got := controlReply(t, cfg, controlReady); got != "ok\n" {
 		t.Errorf("active ready = %q", got)
 	}
-	if got := controlReply(t, cfg, "stop "); got != "" {
-		t.Errorf("unknown command replied %q", got)
+	if got, err := requestControl(cfg.control, "stop "); got != "" || err != io.ErrUnexpectedEOF {
+		t.Errorf("unknown command replied %q, %v", got, err)
 	}
 	for range 2 {
 		if got := controlReply(t, cfg, controlStop); got != "ok\n" {
@@ -253,6 +254,34 @@ func TestBrokerControl(t *testing.T) {
 		conn.Close()
 	}
 	waitBroker(t, done)
+}
+
+func TestStatusDisconnect(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "control.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		conn.SetReadDeadline(time.Now().Add(time.Second))
+		if line, err := bufio.NewReader(conn).ReadString('\n'); line != "status\n" || err != nil {
+			t.Errorf("status request = %q, %v", line, err)
+		}
+	}()
+	reply, err := requestControl(path, controlStatus)
+	listener.Close()
+	<-done
+	if reply != "" || err != io.ErrUnexpectedEOF {
+		t.Fatalf("disconnected status = %q, %v", reply, err)
+	}
 }
 
 func TestBrokerCancel(t *testing.T) {
@@ -343,6 +372,44 @@ func TestBrokerRefusals(t *testing.T) {
 			t.Fatalf("join during drain on %s = %q, want R", spec.subdir, reply)
 		}
 		wantEOF(t, late)
+	}
+}
+
+func TestBrokerDaemonHandshakeBudget(t *testing.T) {
+	cfg := testBrokerConfig(t)
+	cfg.startup = time.Second
+	startBroker(t, cfg)
+	path := rolePath(cfg, "daemon")
+	var held [4]net.Conn
+	for i := range held {
+		conn, err := net.DialTimeout("unix", path, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		held[i] = conn
+	}
+	extra, err := net.DialTimeout("unix", path, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer extra.Close()
+	extra.SetReadDeadline(time.Now().Add(time.Second))
+	wantEOF(t, extra)
+
+	admitted(t, cfg, "agents", "codex")
+	if got := controlReply(t, cfg, controlStatus); got != "state=active\njoinable=yes\nremaining=0\nagents=codex\nservices=\n" {
+		t.Fatalf("status with daemon handshakes pending = %q", got)
+	}
+	for _, conn := range held {
+		conn.SetDeadline(time.Now().Add(time.Second))
+		if _, err := io.WriteString(conn, formatJoin("docker")); err != nil {
+			t.Fatal(err)
+		}
+		var reply [1]byte
+		if _, err := io.ReadFull(conn, reply[:]); err != nil || reply[0] != msgAdmit {
+			t.Fatalf("held daemon handshake = %q, %v", reply, err)
+		}
 	}
 }
 
