@@ -71,7 +71,7 @@ for bad in missing wrong; do
         exit 1
     fi
     cmp -s "$functions" "$test_dir/working"
-    [ "$(ls -A "$home/.local/share/ai-coding-sandbox")" = sandbox.sh ]
+    [ "$(ls -A "$home/.local/share/ai-coding-sandbox")" = "$(printf 'sandbox.sh\nsource-url')" ]
 done
 grep -Fq 'is not the sandbox shell functions' "$test_dir/err"
 

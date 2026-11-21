@@ -3,7 +3,7 @@
 Implement with the implement-in-phases skill; do not build from this file
 without it. Model tiers map to models in [models.md](models.md) and
 [models-codex.md](models-codex.md).
-Status: planned
+Status: in progress (stages done: 01.1)
 Before: `sandbox claude|codex` pulls the latest released images through the
 `oci://...-compose:latest` Compose file and `pull --policy missing`. The shell
 functions in `sandbox/shell/sandbox.sh` change only when the user reruns
@@ -111,7 +111,7 @@ From planning, 2026-11-21, after review round 1:
 
 | Stage | Goal | Tier | Order | Status |
 | --- | --- | --- | --- | --- |
-| 01.1 | Updater, in-shell reload and the installer's source record | top | first | planned |
+| 01.1 | Updater, in-shell reload and the installer's source record | top | first | done |
 | 01.2 | Regression tests in bash and zsh | middle+ | after 01.1, parallel with 01.3 | planned |
 | 01.3 | Documentation and repository rules | middle+ | after 01.1, parallel with 01.2 | planned |
 
@@ -451,6 +451,9 @@ After all stages:
 - Leave a clean working tree.
 
 ## Notes
+
+- Plan start: ee45539
+- 2026-11-21: models.md regenerated before the first dispatch; unchanged.
 
 - 2026-11-21: Concern raised: auto-update runs unreviewed host code on every
   launch. That widens what a compromised `main` reaches; today only an
