@@ -62,6 +62,7 @@ jobs:
           sh sandbox/tests/test-pin-session-images.sh
           sh sandbox/tests/test-release-tags.sh
           sh sandbox/tests/test-shell-functions.sh
+          sh sandbox/tests/test-lifecycle.sh
           sh sandbox/tests/test-install.sh
 
       - name: Detect image changes
