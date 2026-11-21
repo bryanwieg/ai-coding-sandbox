@@ -124,7 +124,9 @@ Work:
 3. Add `lifecycle` to `pin-session-images`' `case` and to its header
    comment's list.
 4. In `test-pin-session-images.sh`, add `lifecycle="$(digest 7)"` to the
-   argument list and a `grep -Fq "ai-coding-sandbox@$(digest 7)"` check.
+   argument list (the script accepts the name). Do not assert the digest in
+   the output yet: Compose has no `lifecycle-latest` reference until 02.2,
+   which adds the `grep -Fq "ai-coding-sandbox@$(digest 7)"` check.
    Until 02.2 adds the service, the digest is unused; the test still passes
    since every `image:` line is pinned.
 5. Build each target locally: `docker build --target X sandbox` for
@@ -224,7 +226,8 @@ Files:
 - `sandbox/compose.session.yaml`
 - `sandbox/compose.dev.yaml`
 - `sandbox/bin/check-sandbox`
-- `sandbox/bin/audit-sandbox` (build list only)
+- `sandbox/bin/audit-sandbox` (build list and `session()`'s group wait)
+- `sandbox/tests/test-pin-session-images.sh` (the lifecycle digest check)
 
 Work:
 1. Add the service, volume, mounts, dependencies and grace periods. Update
@@ -288,7 +291,9 @@ Done when:
 - `sandbox/bin/check-sandbox` passes, and fails when (try each, then
   revert) a service other than those listed mounts the volume, the daemon
   mounts `services`, or an agent mount is writable.
-- `sh sandbox/tests/test-pin-session-images.sh` passes (the lifecycle image
+- `test-pin-session-images.sh` gains the `grep -Fq
+  "ai-coding-sandbox@$(digest 7)"` check (moved from 02.1), and
+  `sh sandbox/tests/test-pin-session-images.sh` passes (the lifecycle image
   is now pinned), and `sh sandbox/tests/test-audit-session.sh` passes.
 - `sandbox/bin/audit-sandbox --no-docker` passes; the full
   `sandbox/bin/audit-sandbox` passes locally (boundary change: new service
@@ -466,3 +471,6 @@ If any of 1-3 fails, revise 01.3 (the wrapper's agent role) before phase 03.
   `COMPOSE_PROJECT_NAME=ai-coding-sandbox-lifecycle` from the shell instead
   of a copied `.sandbox/`. As in phase 01, every stage goes to Codex (user:
   Claude usage nearly exhausted); the orchestrator runs Docker-based checks.
+- 2026-11-21 (02.1 builder stop): the pinned-output digest check moved
+  from 02.1 to 02.2, because the `lifecycle-latest` reference it needs is
+  added to Compose only in 02.2.
