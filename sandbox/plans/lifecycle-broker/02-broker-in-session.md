@@ -14,18 +14,16 @@ them), so sessions behave as before, and `sandbox-status`-style queries
 agents. The user inspects real Claude and Codex sessions (checklist in
 02.3).
 
-## Dev session of this worktree
+## Dev session of this checkout
 
-Every "dev session of this repository" step in this plan runs from the
-worktree root with a `.sandbox/` of its own, made once before 02.2:
-`.sandbox/` is ignored, so the worktree has none. Copy the main checkout's
-`.sandbox/` folder into the worktree and change `COMPOSE_PROJECT_NAME` in
-the copy's `env` to `ai-coding-sandbox-lifecycle`. Without that change the
-worktree's images would recreate the services of the user's own session
-group (`ai-coding-sandbox-session`). Keep `COMPOSE_FILE=
-sandbox/compose.session.yaml,sandbox/compose.dev.yaml`. Then run
-`sandbox-trust` there (approvals are per project folder). Never commit
-`.sandbox/`.
+The work moved from a worktree to the main checkout (branch
+`lifecycle-broker`, 2026-11-21), whose `.sandbox/` already selects
+`COMPOSE_FILE=sandbox/compose.session.yaml,sandbox/compose.dev.yaml` and
+is trusted. Its `COMPOSE_PROJECT_NAME` is `ai-coding-sandbox-session`, the
+user's own session group, so every "dev session of this repository" step
+in this plan runs with `COMPOSE_PROJECT_NAME=ai-coding-sandbox-lifecycle`
+exported in the shell (it overrides the env file); never edit or commit
+`.sandbox/`. `audit-sandbox` already uses its own project name.
 
 ## Assumptions
 - Verified: release matrix entries are `{target, name}` pairs in
@@ -277,8 +275,8 @@ Work:
    in a helper function: `sandbox/tests/test-audit-session.sh` extracts only
    `session()` with `sed` and `eval` and runs it against a project without
    a `lifecycle` service (a failing `exec` there means no wait).
-5. Verify the open assumption on tmpfs `/run`: with the worktree's dev (see "Dev session of this worktree")
-   `.sandbox/env`, `docker compose --env-file .sandbox/env --profile docker
+5. Verify the open assumption on tmpfs `/run`: with the dev session settings (see "Dev session of this checkout"),
+   `COMPOSE_PROJECT_NAME=ai-coding-sandbox-lifecycle`, `docker compose --env-file .sandbox/env --profile docker
    up -d lifecycle egress-proxy docker`, then `docker compose exec` into
    `egress-proxy` and `docker` and `ls -l /run/sandbox-lifecycle` (expect
    `lifecycle.sock` once the broker listens); then `docker compose down`.
@@ -411,8 +409,8 @@ Work:
    `sh sandbox/tests/test-session-init.sh`, and the other agent-image tests
    CI runs (`test-session-agent-launch.sh`, `test-session-exit.sh`) to
    confirm they pass.
-6. Run, and record in Notes, the non-interactive checks in the worktree's
-   dev session (see "Dev session of this worktree"): `echo hi | docker compose --env-file .sandbox/env run
+6. Run, and record in Notes, the non-interactive checks in this checkout's
+   dev session (see "Dev session of this checkout"): `echo hi | docker compose --env-file .sandbox/env run
    --rm -T claude sh -c cat` prints `hi`; `docker compose … run --rm -T
    claude sh -c 'exit 5'` exits 5; a session's exit hooks still run
    (`sandbox-start` prints the `exit.d` branch report after `sandbox claude`
@@ -439,7 +437,7 @@ where weaker models fail quietly.
 
 ### User inspection at the end of this phase
 
-In the worktree's dev session (see "Dev session of this worktree"), run
+In this checkout's dev session (see "Dev session of this checkout"), run
 and confirm:
 1. `sandbox` (Claude): the TUI draws, resizing the terminal redraws it,
    Ctrl-C behaves as in Claude, `/exit` ends the session and the exit hooks
@@ -463,3 +461,8 @@ If any of 1-3 fails, revise 01.3 (the wrapper's agent role) before phase 03.
 - 2026-11-20: Stage order keeps every commit working: the broker and agent
   joins arrive while the services still end themselves; phase 03 then
   switches the services and only its last stage removes the leases.
+- Plan start (phase 02): de02d9e
+- 2026-11-21: work moved to the main checkout; the dev-session steps use
+  `COMPOSE_PROJECT_NAME=ai-coding-sandbox-lifecycle` from the shell instead
+  of a copied `.sandbox/`. As in phase 01, every stage goes to Codex (user:
+  Claude usage nearly exhausted); the orchestrator runs Docker-based checks.
