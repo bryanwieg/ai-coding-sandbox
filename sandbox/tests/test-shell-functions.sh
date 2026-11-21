@@ -182,8 +182,10 @@ for shell in bash zsh; do
             exit 1
         fi
     done
-    if run "$test_dir/empty" sandbox 2>"$test_dir/err"; then exit 1; fi
+    # The home folder is never initialized implicitly.
+    if run "$test_dir/empty" "HOME='$test_dir/empty' sandbox" > "$test_dir/output" 2>"$test_dir/err"; then exit 1; fi
     grep -Fq 'no .sandbox/env here' "$test_dir/err"
+    if grep -Fxq sandbox-init-config "$test_dir/output"; then exit 1; fi
     trust='compose --env-file .sandbox/env run --rm -T trust --yes '
     unlock='compose --env-file .sandbox/env run --rm ssh-unlock --if-needed '
     launch='compose --env-file .sandbox/env run --rm '
@@ -417,8 +419,8 @@ services=docker' ]
     run "$test_dir/project" "SANDBOX_TEST_IMAGES='$released ai-coding-sandbox-dev:agent' sandbox-prune" >/dev/null
     run "$test_dir/empty" "SANDBOX_TEST_IMAGES='$released' sandbox-prune" >/dev/null
     [ ! -s "$removed" ]
-    # Only a Git repository's root without .sandbox/env is initialized and
-    # staged; a failed init launches nothing.
+    # A Git repository's root without .sandbox/env is initialized and
+    # staged, a subfolder is not, and a failed init launches nothing.
     rm -rf "$test_dir/repo"
     mkdir -p "$test_dir/repo/sub"
     git init -q "$test_dir/repo"
@@ -434,8 +436,24 @@ services=docker' ]
     tail -n 1 "$test_dir/output" | grep -Fxq claude
     grep -Fq 'staged .sandbox/' "$test_dir/err"
     [ "$(git -C "$test_dir/repo" diff --cached --name-only | tr '\n' ' ')" = '.sandbox/.gitignore .sandbox/egress-policy.yaml ' ]
-    if run "$test_dir/empty" 'SANDBOX_TEST_INIT=1 sandbox' 2>/dev/null; then exit 1; fi
-    [ ! -e "$test_dir/empty/.sandbox" ]
+    # A folder outside any work tree, such as one holding several
+    # repositories, is initialized without staging.
+    rm -rf "$test_dir/workspace"
+    mkdir -p "$test_dir/workspace"
+    git init -q "$test_dir/workspace/repo"
+    run "$test_dir/workspace" 'SANDBOX_TEST_INIT=1 sandbox' > "$test_dir/output" 2>"$test_dir/err"
+    tail -n 1 "$test_dir/output" | grep -Fxq claude
+    [ -f "$test_dir/workspace/.sandbox/env" ]
+    if grep -Fq 'staged' "$test_dir/err"; then exit 1; fi
+    [ -z "$(git -C "$test_dir/workspace/repo" status --porcelain)" ]
+    # A repository that ignores .sandbox/ launches without staging it.
+    rm -rf "$test_dir/ignored"
+    git init -q "$test_dir/ignored"
+    printf '.sandbox/\n' > "$test_dir/ignored/.gitignore"
+    run "$test_dir/ignored" 'SANDBOX_TEST_INIT=1 sandbox' > "$test_dir/output" 2>"$test_dir/err"
+    tail -n 1 "$test_dir/output" | grep -Fxq claude
+    grep -Fq 'ignored by Git here' "$test_dir/err"
+    [ -z "$(git -C "$test_dir/ignored" diff --cached --name-only)" ]
     output=$(run "$test_dir/project" 'sandbox-init --reference /ref' | tr '\n' ' ')
     case "$output" in
         "run --rm --pull=always -it --network none --read-only "*" --cap-drop ALL "*" -v $test_dir/project:/project -e HOST_PWD=$test_dir/project ghcr.io/bryanwieg/ai-coding-sandbox:init-latest sandbox-init-config --reference /ref ") ;;

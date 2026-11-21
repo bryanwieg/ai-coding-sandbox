@@ -76,7 +76,7 @@ sandbox/bin/install-shell-functions ~/.zshrc   # or name the file
 | --- | --- |
 | `sandbox --help` (or `-h`) | Show sandbox commands and parameters without starting Docker; works before setup |
 | `sandbox-init [--reference PATH] [--force]` | `sandbox-init-config` from the dedicated init image, offline, in this folder |
-| `sandbox [SERVICE [ARGS...]]` | At a Git repository's root without `.sandbox/env`, run `sandbox-init` and stage `.sandbox/`; approve egress, unlock SSH if enabled, then run the agent with Compose (default `claude`); other services run directly |
+| `sandbox [SERVICE [ARGS...]]` | Without `.sandbox/env`, run `sandbox-init` at a Git repository's root (and stage `.sandbox/`) or in a folder outside any repository; approve egress, unlock SSH if enabled, then run the agent with Compose (default `claude`); other services run directly |
 | `sandbox-trust` | `sandbox trust`, then reload a running proxy whose policy changed |
 | `sandbox-unlock` | Unlock SSH keys for the running session group or for a session you start within two minutes |
 | `sandbox-stop` | Stop the project's sessions and services, keeping its volumes |
@@ -236,8 +236,11 @@ Running `sandbox` at the root of a Git repository without `.sandbox/env`,
 such as a fresh clone, runs `sandbox-init` with its defaults first, stages
 `.sandbox/` with `git add` and then starts the session. The `.gitignore` keeps
 `env` and `agent.env` unstaged, and files that already exist are kept. Review
-and commit the staged files. Anywhere else, including a subfolder of a
-repository, `sandbox` still stops and asks you to run `sandbox-init`.
+and commit the staged files; a repository that ignores `.sandbox/` is not
+staged. In a folder outside any repository, such as one holding several
+repositories the agent should work across, `sandbox` creates `.sandbox/` the
+same way without staging it. In a subfolder of a repository, the home folder
+or `/`, `sandbox` still stops and asks you to run `sandbox-init`.
 
 To provide tokens or other environment variables to the agents, edit
 `.sandbox/agent.env` in your editor, then start a new session normally:

@@ -33,7 +33,7 @@ Then, from a project's root folder:
 
 ```sh
 sandbox-init       # once: create .sandbox/ (settings, egress policy, SSH);
-                   # in a Git repo, sandbox does this and stages it for you
+                   # sandbox does this for you (and stages it in a Git repo)
 sandbox            # approve egress, unlock SSH if enabled, start Claude Code
 sandbox codex      # or Codex
 sandbox-trust      # review and approve egress; applies to running sessions at once
