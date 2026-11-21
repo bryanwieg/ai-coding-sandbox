@@ -18,16 +18,18 @@ mkdir -p "$check_dir/src/project"
 # agents' state volumes writable. Released images come from GHCR, never a build.
 session_file="$root_dir/compose.session.yaml"
 dev_file="$root_dir/compose.dev.yaml"
+check_project=sandbox-check
 render_session() (
     # Compose versions differ in whether they honor an inherited PWD.
     cd "$check_dir/src/project"
     env SANDBOX_UID=1000 SANDBOX_GID=1000 SANDBOX_DAEMON_EGRESS="${check_daemon_egress-}" \
         SANDBOX_REFERENCE="${check_reference-$check_dir}" \
         SANDBOX_PUBLISH_PORTS=8000-8001 SANDBOX_SSH_KEY_DIR=/tmp/sandbox-check-keys \
-        docker compose -p sandbox-check "$@" --profile '*' config --format json
+        docker compose -p "$check_project" "$@" --profile '*' config --format json
 )
 rendered_session=$(render_session -f "$session_file")
-printf '%s\n' "$rendered_session" | jq -e --arg reference "$check_dir" '
+other_volume=$(check_project=sandbox-check-other render_session -f "$session_file" | jq -r '.volumes.lifecycle.name')
+printf '%s\n' "$rendered_session" | jq -e --arg reference "$check_dir" --arg other_volume "$other_volume" '
     def root: test("^(0(:|$)|root(:|$))");
     def caps($name):
         if ($name | test("-state-init$|^migrate-")) then ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
@@ -63,6 +65,7 @@ printf '%s\n' "$rendered_session" | jq -e --arg reference "$check_dir" '
     # can bind-mount daemon paths and must see only their own socket.
     ((.volumes.lifecycle.external // false) == false) and
     (.volumes.lifecycle.name == "sandbox-check_lifecycle") and
+    ($other_volume == "sandbox-check-other_lifecycle") and
     ($broker.user == "13:13") and ($broker.restart == "on-failure") and
     (($broker.depends_on // {} | length) == 0) and
     ($broker.healthcheck.test == ["CMD", "/usr/local/bin/sandbox-lifecycle", "ready"]) and
@@ -75,7 +78,9 @@ printf '%s\n' "$rendered_session" | jq -e --arg reference "$check_dir" '
     # Services supervise their own children as PID 1. Agents run under tini.
     all(["lifecycle", "egress-proxy", "docker", "publish", "ssh-agent"][]; $s[.].init != true) and
     all(["claude", "codex", "egress-proxy", "docker", "publish", "ssh-agent"][];
-        $s[.].depends_on.lifecycle.condition == "service_healthy") and
+        $s[.].depends_on | has("lifecycle")) and
+    all($s[] | .depends_on | select(has("lifecycle")) | .lifecycle;
+        .condition == "service_healthy" and (has("required") == false or .required == true)) and
     ($broker.stop_grace_period == null) and ($s.docker.stop_grace_period == "25s") and
     ($s.docker as $d |
         (($d.security_opt | sort) == ["label=disable", "seccomp=unconfined", "systempaths=unconfined"]) and
