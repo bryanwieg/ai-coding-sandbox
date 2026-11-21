@@ -261,6 +261,11 @@ Work:
 8. Keep `session()`'s wait for a group that is not joinable (added in
    02.2).
 9. Apply the network cleanup fix in `cleanup()`.
+   Also replace the remaining lease wording (phase 03 review): the comment
+   that the daemon can idle out during a Go test (~167) and the check
+   `the session lease keeps the daemon up while the session is idle`
+   (~304), which now reads `the session group keeps the daemon up while
+   the session is idle`.
 10. Run `sandbox/bin/audit-sandbox --no-docker` and, locally, the full
    `sandbox/bin/audit-sandbox`.
 

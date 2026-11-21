@@ -42,9 +42,10 @@ ends 2 s after its last agent, plus each service's grace.
   of this phase, `sandbox/shell/sandbox.sh` and
   `sandbox/tests/test-shell-functions.sh` (phase 04), and the READMEs and
   `session-guide.md` (phase 04). Nothing outside this repository uses them.
-- Verified (03.1, 2026-11-21: the proxy drained with an open tunnel in 2787 ms
-  from the broker's `stop`, exit 0, no SIGKILL; within the test's 4 s and the
-  5 s grace): was open: squid exits within 2 s of SIGTERM with the existing
+- Verified (03.1, 2026-11-21): with an open CONNECT tunnel, the proxy
+  container exits 0 within 2787 ms of the broker's `stop` request, inside the
+  test's 4 s limit and before the wrapper's 5 s SIGKILL. (Squid's own time
+  after SIGTERM was not measured separately.) Originally open: squid exits within 2 s of SIGTERM with the existing
   `shutdown_lifetime 1 seconds` while a CONNECT tunnel is open. Check in
   03.1's test (an open tunnel during the drain).
 
@@ -377,3 +378,7 @@ retired code path and the session rules, a permissions document)
   empty `sandbox-session-audit-*_session-daemon-direct` networks leaked by
   earlier audits (the leak 04.2's cleanup fix addresses; one more leaked on
   the passing run). Removed them; the rerun passed.
+- 2026-11-21 (phase review, Codex gpt-6.2-astra high): blocking fix: a
+  drain during the daemon's startup wipe must let the wipe finish and skip
+  the daemon start (03.3 fix). `audit-sandbox` still names the session lease
+  in a comment (~167) and an output line (~304); 04.2 cleans them up.
