@@ -2,7 +2,7 @@
 
 Implement with the implement-in-phases skill; do not build from this file
 without it. Model tiers map to models in [models.md](models.md).
-Status: built 380f14f
+Status: built 90ac967
 Before: no lifecycle code exists on this branch; services end themselves
 through idle counting and leases (see [design.md](design.md#problem)).
 After: `sandbox/lifecycle/` holds the complete `sandbox-lifecycle` Go program
@@ -445,7 +445,7 @@ repository)
   mid-start when an SSH passphrase prompt used most of the 120 s startup
   window. A services-socket join in `starting` now resets the window;
   daemon-socket joins do not (daemon workloads must not extend a lifetime).
-- Plan start: 9e21c14
+- Plan start: bba5aaf
 - 2026-11-21 (user): Claude usage is nearly exhausted, so every phase 01
   stage goes to Codex (`gpt-6.2-astra` high for the top tier), overriding
   the narrow-stage-only routing. Codex builds in its workspace-write
@@ -457,6 +457,6 @@ repository)
   handshake bound and temporary accept-error handling to 01.2; fixes for an
   empty status reply (01.2), stop events during admission and child start,
   and repeated agent SIGTERM (01.3), and a formatter simplification.
-- 2026-11-21: phase review fixes committed as de323bb (01.2) and 380f14f
+- 2026-11-21: phase review fixes committed as 92cfd8e (01.2) and 90ac967
   (01.3); verified by `go test -race -count=10`, the lifecycle runner and
   `check-sandbox`, all passing. The fixes were not re-reviewed.
