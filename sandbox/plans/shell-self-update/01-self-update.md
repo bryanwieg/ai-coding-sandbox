@@ -3,7 +3,7 @@
 Implement with the implement-in-phases skill; do not build from this file
 without it. Model tiers map to models in [models.md](models.md) and
 [models-codex.md](models-codex.md).
-Status: in progress (stages done: 01.1, 01.2, 01.3)
+Status: built 02247ec
 Before: `sandbox claude|codex` pulls the latest released images through the
 `oci://...-compose:latest` Compose file and `pull --policy missing`. The shell
 functions in `sandbox/shell/sandbox.sh` change only when the user reruns
@@ -149,7 +149,9 @@ Contracts:
     `eval '_sandbox_functions_file=${(%):-%x}'`, otherwise from
     `${BASH_SOURCE[0]}`. Prefix `$PWD/` when the path is not absolute.
   - `_sandbox_functions_loaded`: `$(cksum < "$_sandbox_functions_file" 2>/dev/null)`,
-    or empty if that fails.
+    or empty if that fails. This one is set by the file's **last**
+    statement, not in the top block, so a load that fails part-way leaves
+    the previous record and the next launch retries (phase review fix).
 
   Re-sourcing the file sets both again.
 - **`_sandbox_self_update`.** No arguments. It returns 0 only when it
@@ -485,3 +487,11 @@ After all stages:
   - tests were added for no checkout request, ARGS kept on the rerun, and
     `source-url` following a new URL;
   - 01.3 exempts the old-install note.
+- 2026-11-21, phase review (verdict ready, 0 blocking); these fixes were
+  applied, each in its own commit:
+  - the loaded checksum moved to the file's last statement, so a part-way
+    failed load is retried and warned again (probed in bash and zsh; a plan
+    revision of 01.1's top-level block contract, recorded above);
+  - the README `sandbox` row lists the update first;
+  - a test assertion on the test's own fixture was removed.
+  The negated `if` in the parse check was kept as built.
