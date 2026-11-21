@@ -2,7 +2,7 @@
 
 Implement with the implement-in-phases skill; do not build from this file
 without it. Model tiers map to models in [models.md](models.md).
-Status: planned
+Status: built 0fcca46 (interactive inspection pending with the user)
 Before: phase 01 built `sandbox-lifecycle` (all contracts in
 `sandbox/lifecycle/protocol.go`); no image contains it.
 After: a released `lifecycle` image; every session image carries the binary;
@@ -72,9 +72,9 @@ exported in the shell (it overrides the env file); never edit or commit
 
 | Stage | Goal | Tier | Order | Status |
 | --- | --- | --- | --- | --- |
-| 02.1 | Broker image, binary in every session image, release matrix | top | first | planned |
-| 02.2 | `lifecycle` service and mounts in Compose, enforced by check-sandbox | top | after 02.1 | planned |
-| 02.3 | Agents join the broker in sessions; shared test helper | top | after 02.2 | planned |
+| 02.1 | Broker image, binary in every session image, release matrix | top | first | done |
+| 02.2 | `lifecycle` service and mounts in Compose, enforced by check-sandbox | top | after 02.1 | done |
+| 02.3 | Agents join the broker in sessions; shared test helper | top | after 02.2 | done |
 
 ## 02.1 Broker image, binary in every session image, release matrix
 
