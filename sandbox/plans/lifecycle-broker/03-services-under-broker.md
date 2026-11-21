@@ -42,7 +42,9 @@ ends 2 s after its last agent, plus each service's grace.
   of this phase, `sandbox/shell/sandbox.sh` and
   `sandbox/tests/test-shell-functions.sh` (phase 04), and the READMEs and
   `session-guide.md` (phase 04). Nothing outside this repository uses them.
-- Open: squid exits within 2 s of SIGTERM with the existing
+- Verified (03.1, 2026-11-21: the proxy drained with an open tunnel in 2787 ms
+  from the broker's `stop`, exit 0, no SIGKILL; within the test's 4 s and the
+  5 s grace): was open: squid exits within 2 s of SIGTERM with the existing
   `shutdown_lifetime 1 seconds` while a CONNECT tunnel is open. Check in
   03.1's test (an open tunnel during the drain).
 
@@ -369,3 +371,9 @@ retired code path and the session rules, a permissions document)
 - 2026-11-21 (03.1 builder stop): the renderer already appends
   `shutdown_lifetime 1 seconds`; the planned `squid.conf` change would have
   duplicated it. Kept the 1 s value, dropped `squid.conf` from 03.1.
+- 2026-11-21 (03.1): test-session-proxy, check-sandbox, `audit-sandbox
+  --no-docker` and the full audit pass. The first full audit failed only
+  the direct-egress section: Docker's address pools were exhausted by ten
+  empty `sandbox-session-audit-*_session-daemon-direct` networks leaked by
+  earlier audits (the leak 04.2's cleanup fix addresses; one more leaked on
+  the passing run). Removed them; the rerun passed.
