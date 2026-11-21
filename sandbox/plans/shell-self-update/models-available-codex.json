@@ -1,0 +1,21 @@
+{
+  "tool": "codex",
+  "tool_version": "0.171.0",
+  "looked_up_from": "codex debug models",
+  "subagent_model_choice": "allowed",
+  "opted_in": true,
+  "opt_in_where": "codex-build.sh sets the model",
+  "models": [
+    {"id": "gpt-6.2-sol", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
+    {"id": "gpt-6.2-astra", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
+    {"id": "gpt-6-astra", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
+    {"id": "gpt-6.1-sol", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
+    {"id": "gpt-6.1-terra", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
+    {"id": "gpt-6-sol", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
+    {"id": "gpt-6-luna", "efforts": ["low", "medium", "high", "xhigh", "max"]},
+    {"id": "gpt-5.6-sol", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
+    {"id": "gpt-5.6-terra", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
+    {"id": "gpt-5.6-luna", "efforts": ["low", "medium", "high", "xhigh", "max"]},
+    {"id": "gpt-5.5", "efforts": ["low", "medium", "high", "xhigh"]}
+  ]
+}

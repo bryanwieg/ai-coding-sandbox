@@ -6,7 +6,9 @@
 #   sandbox-init [--reference PATH]   create .sandbox/ for this project
 #   sandbox [SERVICE [ARGS...]]       start a session (default: claude); without
 #                                     .sandbox/, runs sandbox-init first and, at
-#                                     a Git repository's root, stages it
+#                                     a Git repository's root, stages it; agent
+#                                     launches first update the installed
+#                                     functions
 #   sandbox codex                     ... or Codex
 #   sandbox claude bash               ... or a shell in a Claude session
 #   sandbox-trust                     review and approve the egress policy
@@ -18,6 +20,18 @@
 # Variables set in the shell override .sandbox/env for one launch, for
 # example: SANDBOX_PUBLISH_PORTS=3000 sandbox
 
+# Where this copy is, so an agent launch can update it. What it held is
+# recorded at the end of the file, so only a complete load counts.
+if [ -n "${ZSH_VERSION:-}" ]; then
+    eval '_sandbox_functions_file=${(%):-%x}'
+else
+    _sandbox_functions_file=${BASH_SOURCE[0]}
+fi
+case "$_sandbox_functions_file" in
+    /*) ;;
+    *) _sandbox_functions_file=$PWD/$_sandbox_functions_file ;;
+esac
+
 sandbox() {
     case "${1:-}" in
         -h|--help)
@@ -28,6 +42,9 @@ Run from the project root. The default service is claude. Without
 .sandbox/env, sandbox runs sandbox-init first, at a Git repository's root or in
 a folder outside any repository, such as one holding several. At a repository's
 root it stages the new .sandbox/ folder (env and agent.env stay ignored).
+
+Agent launches (claude, codex) first update the installed shell functions and
+load them into this shell.
 
 Commands:
   sandbox                         Approve egress, unlock SSH if enabled, start Claude
@@ -59,6 +76,17 @@ Arguments after SERVICE are passed to that service, e.g. sandbox codex --help.
 For Docker Compose run options: docker compose run --help
 HELP
             return 0
+            ;;
+    esac
+    # Agent launches first update the installed shell functions, alongside
+    # the image updates below, and rerun with any newer definitions.
+    case "${1:-claude}" in
+        claude|codex)
+            if [ -z "${_sandbox_update_checked:-}" ] && _sandbox_self_update; then
+                local _sandbox_update_checked=1
+                sandbox "$@"
+                return
+            fi
             ;;
     esac
     if [ ! -f .sandbox/env ]; then
@@ -159,6 +187,66 @@ _sandbox_prepare_images() {
         printf '%s\n' "$sandbox_output" >&2
         return "$sandbox_result"
     fi
+}
+
+# Refreshes the installed copy of this file from its source, then loads the
+# installed copy when it differs from what this shell loaded. Returns 0 only
+# when it loaded one. Only an installed copy updates itself: install.sh
+# records the URL it downloaded from in source-url next to the copy, and the
+# update comes from that URL alone, so a fork or custom install stays on the
+# source its user chose. A checkout copy has no record; it follows its
+# checkout, so this returns before any command or network request.
+_sandbox_self_update() {
+    local sandbox_record
+    local sandbox_url
+    local sandbox_functions
+    local sandbox_download
+    local sandbox_replaced
+    sandbox_functions=$_sandbox_functions_file
+    sandbox_record=${sandbox_functions%/*}/source-url
+    [ -f "$sandbox_record" ] || return 1
+    sandbox_replaced=0
+    IFS= read -r sandbox_url < "$sandbox_record"
+    sandbox_download=
+    if [ -z "$sandbox_url" ] || ! command -v curl >/dev/null 2>&1 ||
+        ! sandbox_download=$(mktemp "${sandbox_functions%/*}/.sandbox.sh.XXXXXX" 2>/dev/null) ||
+        ! curl -fsSL --connect-timeout 5 --max-time 20 "$sandbox_url" -o "$sandbox_download" 2>/dev/null; then
+        [ -z "$sandbox_download" ] || rm -f "$sandbox_download"
+        echo 'sandbox: could not check for shell function updates; continuing with the installed copy.' >&2
+    elif cmp -s "$sandbox_download" "$sandbox_functions"; then
+        rm -f "$sandbox_download"
+    elif ! grep -q '^sandbox() {$' "$sandbox_download" ||
+        ! if [ -n "${ZSH_VERSION:-}" ]; then
+            zsh -n "$sandbox_download" >/dev/null 2>&1
+        else
+            "$BASH" -n "$sandbox_download" >/dev/null 2>&1
+        fi; then
+        # The download is the one outside input: it must be these functions
+        # and parse in this shell before it replaces the installed copy.
+        rm -f "$sandbox_download"
+        echo "sandbox: $sandbox_url is not valid sandbox shell functions; keeping the installed copy." >&2
+    elif chmod 0644 "$sandbox_download" && mv -f "$sandbox_download" "$sandbox_functions"; then
+        sandbox_replaced=1
+    else
+        rm -f "$sandbox_download"
+        echo 'sandbox: could not check for shell function updates; continuing with the installed copy.' >&2
+    fi
+    # Compare with what this shell loaded, not with the download, so an
+    # update made by another terminal or an install.sh rerun loads too.
+    if [ "$(cksum < "$sandbox_functions" 2>/dev/null)" = "$_sandbox_functions_loaded" ]; then
+        return 1
+    fi
+    # shellcheck source=/dev/null
+    if ! . "$sandbox_functions"; then
+        echo 'sandbox: could not load the updated shell functions; open a new terminal to load them.' >&2
+        return 1
+    fi
+    if [ "$sandbox_replaced" = 1 ]; then
+        echo "sandbox: updated the shell functions from $sandbox_url and loaded them into this shell." >&2
+    else
+        echo 'sandbox: loaded the shell functions updated since this shell started.' >&2
+    fi
+    return 0
 }
 
 # On launch, wait only for a group that is winding down. An explicit stop
@@ -349,3 +437,7 @@ EOF
     fi
     return 0
 }
+
+# Keep last: a load that fails part-way leaves the previous record, so the
+# next agent launch tries to load the installed copy again.
+_sandbox_functions_loaded=$(cksum < "$_sandbox_functions_file" 2>/dev/null) || _sandbox_functions_loaded=

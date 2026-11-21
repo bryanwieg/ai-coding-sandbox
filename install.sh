@@ -6,12 +6,14 @@
 #
 # Sessions need only the published images and Compose file, so no checkout is
 # needed. It downloads shell/sandbox.sh to
-# ${XDG_DATA_HOME:-~/.local/share}/ai-coding-sandbox/sandbox.sh, creates the
-# shared state volumes when Docker is reachable, and sources the functions
-# from the startup file of the shell that ran it: ~/.zshrc for zsh,
-# ~/.bashrc for bash, falling back to $SHELL. Name another file with:
-# ... | sh -s -- RC_FILE. A startup file that already sources the functions,
-# from a checkout for example, is pointed at the downloaded copy.
+# ${XDG_DATA_HOME:-~/.local/share}/ai-coding-sandbox/sandbox.sh and records
+# the download URL in source-url next to it, from which agent launches keep
+# that copy updated. It creates the shared state volumes when Docker is
+# reachable, and sources the functions from the startup file of the shell
+# that ran it: ~/.zshrc for zsh, ~/.bashrc for bash, falling back to $SHELL.
+# Name another file with: ... | sh -s -- RC_FILE. A startup file that already
+# sources the functions, from a checkout for example, is pointed at the
+# downloaded copy.
 #
 # SANDBOX_FUNCTIONS_DIR and SANDBOX_FUNCTIONS_URL override the folder and the
 # download.
@@ -52,7 +54,8 @@ fi
 # download never replaces a working copy.
 mkdir -p "$dir"
 download=$(mktemp "$dir/.sandbox.sh.XXXXXX")
-trap 'rm -f "$download"' EXIT HUP INT TERM
+record=
+trap 'rm -f "$download" "$record"' EXIT HUP INT TERM
 curl -fsSL "$url" -o "$download"
 if ! grep -q '^sandbox() {$' "$download"; then
     echo "install.sh: $url is not the sandbox shell functions." >&2
@@ -60,6 +63,11 @@ if ! grep -q '^sandbox() {$' "$download"; then
 fi
 chmod 0644 "$download"
 mv -f "$download" "$functions"
+# Record the source, so the copy's agent launches update it from there.
+record=$(mktemp "$dir/.source-url.XXXXXX")
+printf '%s\n' "$url" > "$record"
+chmod 0644 "$record"
+mv -f "$record" "$dir/source-url"
 echo "Installed the sandbox shell functions in $functions."
 
 if command -v docker >/dev/null && docker info >/dev/null 2>&1; then

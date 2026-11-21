@@ -1,0 +1,14 @@
+{
+  "tool": "claude-code",
+  "tool_version": "2.1.330",
+  "looked_up_from": "Agent tool parameter description (model enum: sonnet, opus, haiku, fable; effort enum: low, medium, high, xhigh, max)",
+  "subagent_model_choice": "allowed",
+  "opted_in": true,
+  "opt_in_where": "phased-delivery plugin: implement-in-phases sets subagent model and effort",
+  "models": [
+    {"id": "fable", "efforts": ["low", "medium", "high", "xhigh", "max"]},
+    {"id": "opus", "efforts": ["low", "medium", "high", "xhigh", "max"]},
+    {"id": "sonnet", "efforts": ["low", "medium", "high", "xhigh", "max"]},
+    {"id": "haiku", "efforts": ["low", "medium", "high", "xhigh", "max"]}
+  ]
+}

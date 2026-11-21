@@ -2,7 +2,8 @@
 # The curl installer: piped into sh from zsh or bash, it downloads the shell
 # functions, creates the state volumes, and sources the functions once from
 # the startup file of the shell that ran it, not the login shell; a rerun
-# replaces the copy and repoints a startup file that sourced a checkout; a
+# replaces the copy and repoints a startup file that sourced a checkout; it
+# records the download URL in source-url, which follows a rerun's URL; a
 # failed or wrong download keeps the working copy; it works without Docker,
 # takes a named startup file, and refuses an unknown shell.
 set -eu
@@ -38,6 +39,7 @@ for shell in zsh bash; do
     HOME=$home SHELL=$login "$shell" -c "cat '$install' | sh" > "$test_dir/output"
     functions=$home/.local/share/ai-coding-sandbox/sandbox.sh
     cmp -s "$functions" "$test_dir/sandbox.sh"
+    [ "$(cat "${functions%/*}/source-url")" = "$SANDBOX_FUNCTIONS_URL" ]
     [ "$(grep -cFx "$marker" "$home/$rc")" -eq 1 ]
     grep -Fxq ". \"$functions\"" "$home/$rc"
     [ ! -e "$home/.zshrc" ] || [ "$rc" = .zshrc ]
@@ -56,13 +58,23 @@ HOME=$home bash -c "cat '$install' | sh" > "$test_dir/output"
 grep -Fq "Pointed $home/.bashrc" "$test_dir/output"
 functions=$home/.local/share/ai-coding-sandbox/sandbox.sh
 [ "$(cat "$home/.bashrc")" = "$(printf '# mine\n%s\n. "%s"\n# after' "$marker" "$functions")" ]
+[ "$(cat "${functions%/*}/source-url")" = "$SANDBOX_FUNCTIONS_URL" ]
 printf '# updated\n' >> "$test_dir/sandbox.sh"
 HOME=$home bash -c "cat '$install' | sh" > "$test_dir/output"
 cmp -s "$functions" "$test_dir/sandbox.sh"
 if grep -Fq Pointed "$test_dir/output"; then exit 1; fi
 [ "$(grep -cFx "$marker" "$home/.bashrc")" -eq 1 ]
+[ "$(cat "${functions%/*}/source-url")" = "$SANDBOX_FUNCTIONS_URL" ]
 
-# A failed or wrong download keeps the working copy and leaves no temp file.
+# A rerun from another source, such as a fork, records that source.
+cp "$test_dir/sandbox.sh" "$test_dir/fork.sh"
+printf '# fork\n' >> "$test_dir/fork.sh"
+HOME=$home SANDBOX_FUNCTIONS_URL="file://$test_dir/fork.sh" bash -c "cat '$install' | sh" >/dev/null
+cmp -s "$functions" "$test_dir/fork.sh"
+[ "$(cat "${functions%/*}/source-url")" = "file://$test_dir/fork.sh" ]
+
+# A failed or wrong download keeps the working copy and its source record,
+# and leaves no temp file.
 cp "$functions" "$test_dir/working"
 for bad in missing wrong; do
     printf 'echo not the functions\n' > "$test_dir/wrong"
@@ -71,7 +83,8 @@ for bad in missing wrong; do
         exit 1
     fi
     cmp -s "$functions" "$test_dir/working"
-    [ "$(ls -A "$home/.local/share/ai-coding-sandbox")" = sandbox.sh ]
+    [ "$(cat "${functions%/*}/source-url")" = "file://$test_dir/fork.sh" ]
+    [ "$(ls -A "$home/.local/share/ai-coding-sandbox")" = "$(printf 'sandbox.sh\nsource-url')" ]
 done
 grep -Fq 'is not the sandbox shell functions' "$test_dir/err"
 
@@ -81,6 +94,7 @@ mkdir -p "$home"
 HOME=$home SANDBOX_TEST_NO_DOCKER=1 bash -c "cat '$install' | sh -s -- '$home/custom-rc'" >/dev/null 2>"$test_dir/err"
 grep -Fq 'Docker is not reachable' "$test_dir/err"
 grep -Fxq "$marker" "$home/custom-rc"
+[ "$(cat "$home/.local/share/ai-coding-sandbox/source-url")" = "$SANDBOX_FUNCTIONS_URL" ]
 [ ! -e "$home/.bashrc" ] && [ ! -e "$home/volumes" ]
 
 # An unknown shell, from neither the parent nor $SHELL, is refused before
