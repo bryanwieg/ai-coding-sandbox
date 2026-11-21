@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck source-path=SCRIPTDIR
 # Session exit in the real agent image: sandbox-start passes the terminal and
 # default Ctrl-C handling to the agent, forwards a stop, returns the agent's
 # status and runs the exit hooks after a normal exit only; the merged-branch
@@ -9,16 +10,30 @@ set -eu
 
 sandbox_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 image=ai-coding-sandbox-agent:test
+prefix=sandbox-exit-test-$$
+held=$prefix-held
 uid=$(id -u)
 gid=$(id -g)
 test_dir=$(mktemp -d)
 failures=0
-trap 'rm -rf "$test_dir"' EXIT HUP INT TERM
+# shellcheck source=lifecycle-helper.sh
+. "$sandbox_dir/tests/lifecycle-helper.sh"
+
+cleanup() {
+    docker ps -aq --filter "label=$prefix" | xargs -r docker rm -f -v >/dev/null 2>&1 || :
+    docker volume ls -q --filter "label=$prefix" | xargs -r docker volume rm >/dev/null 2>&1 || :
+    rm -rf "$test_dir"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 
 pass() { printf 'ok   %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; failures=$((failures + 1)); }
 
 docker build --quiet --target agent --tag "$image" "$sandbox_dir" >/dev/null
+lifecycle_build
+lifecycle_start "$held"
+lifecycle_hold "$held" "$image"
 
 # sandbox-start, with no init hooks, a stub launcher and a recording exit hook.
 mkdir -p "$test_dir/empty" "$test_dir/exit.d" "$test_dir/out"
@@ -39,17 +54,17 @@ exit 1
 EOF
 chmod 0755 "$test_dir/agent" "$test_dir/exit.d/10-record"
 start() {
-    docker run --init --rm --user "$uid:$gid" --read-only --tmpfs /tmp:mode=1777 \
+    docker run --init --rm --label "$prefix" --user "$uid:$gid" --read-only --tmpfs /tmp:mode=1777 \
         -v "$test_dir/empty:/usr/local/libexec/sandbox/init.d:ro" \
         -v "$test_dir/empty:/usr/local/libexec/sandbox/claude/init.d:ro" \
         -v "$test_dir/empty:/usr/local/libexec/sandbox/codex/init.d:ro" \
         -v "$test_dir/agent:/usr/local/libexec/sandbox/claude/agent:ro" \
-        -v "$test_dir/exit.d:/usr/local/libexec/sandbox/exit.d:ro" \
         -v "$test_dir/out:/out" -e SANDBOX_AGENT=claude "$@"
 }
 
+record_hooks=$test_dir/exit.d:/usr/local/libexec/sandbox/exit.d:ro
 status=0
-echo hello | start -i -e STUB_STATUS=3 "$image" sandbox-start read || status=$?
+echo hello | start -v "$record_hooks" -i -e STUB_STATUS=3 "$image" sandbox-start read || status=$?
 if [ "$status" = 3 ]; then pass "the agent's exit status is the session's"; else fail "session status $status"; fi
 if [ "$(cat "$test_dir/out/stdin" 2>/dev/null)" = hello ]; then
     pass 'the agent reads the terminal'
@@ -69,7 +84,7 @@ else
 fi
 
 rm -f "$test_dir/out/"*
-container=$(start -d "$image" sandbox-start wait)
+container=$(start -v "$record_hooks" -d "$image" sandbox-start wait)
 tries=0
 while [ ! -e "$test_dir/out/ready" ] && [ "$tries" -lt 50 ]; do sleep 0.2; tries=$((tries + 1)); done
 docker stop --time 10 "$container" >/dev/null
@@ -115,8 +130,14 @@ g branch fresh
 g worktree add --quiet "$test_dir/wt" kept-worktree
 g switch --quiet current
 
-output=$(docker run --rm --user "$uid:$gid" --network none -v "$test_dir:$test_dir" -w "$repo" \
-    -e SANDBOX_SESSION=1 --entrypoint sh "$image" /usr/local/libexec/sandbox/exit.d/10-git-branches 2>&1) || :
+# A normal agent exit runs the image's branch hook through the lifecycle wrapper.
+# shellcheck disable=SC2046 # lifecycle_mount prints the two mount arguments.
+if output=$(start --network none $(lifecycle_mount "$held" agents) -v "$test_dir:$test_dir" -w "$repo" \
+    -e SANDBOX_SESSION=1 "$image" sandbox-start 2>&1); then
+    pass 'the broker-wrapped session exits normally'
+else
+    fail "broker-wrapped session exited $?: $output"
+fi
 left=$(g for-each-ref --format='%(refname:short)' refs/heads | sort | tr '\n' ' ')
 if [ "$left" = 'current fresh kept-worktree main open ' ]; then
     pass 'merged, squashed and rebased branches go; current, fresh, worktree, open and default stay'

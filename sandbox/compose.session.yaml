@@ -12,7 +12,7 @@
 # session daemon), publish (ports to the host), ssh (the ssh-agent sidecar and
 # ssh-unlock), and tools (trust and the migrate-*-state services). Shared
 # state lives in external volumes created once per machine; see the sandbox
-# README.
+# README. The lifecycle service coordinates each project's session group.
 #
 # SANDBOX_DAEMON_EGRESS=direct (set on the host, in .sandbox/env) gives the
 # session daemon, and so the containers it runs, a direct route out instead of
@@ -65,6 +65,7 @@ x-agent-service: &agent-service
   hostname: sandbox
   user: "${SANDBOX_UID:?Run sandbox-init-config first}:${SANDBOX_GID:?Run sandbox-init-config first}"
   init: true
+  stop_grace_period: 15s
   stdin_open: true
   tty: true
   read_only: true
@@ -160,6 +161,25 @@ x-migrate-state: &migrate-state
     SANDBOX_MIGRATE_MODE: "${SANDBOX_MIGRATE_MODE:-copy}"
 
 services:
+  # Owns the group's lifetime. Every session service and agent waits for it
+  # to be healthy. The broker has no network and no dependencies.
+  lifecycle:
+    <<: *hardened
+    image: ghcr.io/bryanwieg/ai-coding-sandbox:lifecycle-latest
+    user: "13:13"
+    network_mode: none
+    restart: on-failure
+    tmpfs:
+      - /tmp:uid=13,gid=13,mode=0700
+    volumes:
+      - {type: volume, source: lifecycle, target: /run/sandbox-lifecycle}
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/sandbox-lifecycle", "ready"]
+      interval: 1s
+      timeout: 2s
+      retries: 10
+      start_period: 1s
+
   # Both agents share one image and mount both state volumes, so either can
   # run the other (for example, Claude handing a build to Codex) with its
   # sign-in. SANDBOX_AGENT picks the agent the session starts; each keeps
@@ -169,6 +189,7 @@ services:
     profiles: ["claude"]
     image: ghcr.io/bryanwieg/ai-coding-sandbox:agent-latest
     depends_on: &agent-depends-on
+      lifecycle: {condition: service_healthy}
       egress-proxy: {condition: service_healthy}
       docker: {condition: service_healthy, required: false}
       publish: {condition: service_started, required: false}
@@ -182,6 +203,7 @@ services:
       CODEX_HOME: /home/agent/.codex
       GH_CONFIG_DIR: /home/agent/.claude/gh
     volumes: &agent-volumes
+      - {type: volume, source: lifecycle, target: /run/sandbox-lifecycle, read_only: true, volume: {subpath: agents}}
       - *reference-mount
       - *project-mount
       - *config-mount
@@ -241,6 +263,8 @@ services:
   egress-proxy:
     <<: *hardened
     image: ghcr.io/bryanwieg/ai-coding-sandbox:proxy-latest
+    depends_on:
+      lifecycle: {condition: service_healthy}
     user: "13:13"
     environment:
       HOST_PWD: "${PWD}"
@@ -250,6 +274,7 @@ services:
       - /var/log/squid:uid=13,gid=13,mode=0755
       - /var/spool/squid:uid=13,gid=13,mode=0755
     volumes:
+      - &lifecycle-services {type: volume, source: lifecycle, target: /run/sandbox-lifecycle, read_only: true, volume: {subpath: services}}
       - {type: bind, source: "${PWD}/.sandbox/egress-policy.yaml", target: /etc/squid/project-policy.yaml, read_only: true, bind: {create_host_path: false}}
       - {type: volume, source: trust, target: /trust, read_only: true}
     expose:
@@ -264,17 +289,19 @@ services:
       - session-internal
       - session-uplink
 
-  # Rootless daemon for this project's sessions; it stops itself once no agent
-  # holds a connection, and starts empty unless SANDBOX_DOCKER_DATA=persistent. Its privilege exceptions are the
+  # Rootless daemon for this project's sessions. It ends with the session
+  # group and starts empty unless SANDBOX_DOCKER_DATA=persistent. Its privilege exceptions are the
   # rootless daemon's: user namespaces need SETUID/SETGID for newuidmap and
   # newgidmap, unconfined seccomp and system paths, and no no-new-privileges.
   docker:
     profiles: ["docker"]
     image: ghcr.io/bryanwieg/ai-coding-sandbox:docker-daemon-latest
     depends_on:
+      lifecycle: {condition: service_healthy}
       egress-proxy: {condition: service_healthy}
     user: "${SANDBOX_UID}:${SANDBOX_UID}"
     init: false
+    stop_grace_period: 25s
     read_only: true
     cap_drop:
       - ALL
@@ -302,6 +329,8 @@ services:
       # Declared as a volume by the upstream image but unused when rootless.
       - /var/lib/docker
     volumes:
+      # Daemon workloads can bind-mount its paths, so it gets its own socket.
+      - {type: volume, source: lifecycle, target: /run/sandbox-lifecycle, read_only: true, volume: {subpath: daemon}}
       # Bind mounts in the agent's commands resolve here, at the same path.
       - *project-mount
       - *config-mount
@@ -328,7 +357,10 @@ services:
     profiles: ["publish"]
     image: ghcr.io/bryanwieg/ai-coding-sandbox:forwarder-latest
     depends_on:
+      lifecycle: {condition: service_healthy}
       docker: {condition: service_healthy, required: false}
+    volumes:
+      - *lifecycle-services
     user: "65534:65534"
     environment:
       SANDBOX_PUBLISH_PORTS: "${SANDBOX_PUBLISH_PORTS:-}"
@@ -349,16 +381,19 @@ services:
       - session-publish
 
   # Serves the unlocked keys to agents through the socket volume; only it and
-  # ssh-unlock mount the key folder. It lives until its keys expire.
+  # ssh-unlock mount the key folder. It ends with the session group.
   ssh-agent:
     <<: *hardened
     profiles: ["ssh"]
     image: ghcr.io/bryanwieg/ai-coding-sandbox:ssh-agent-latest
+    depends_on:
+      lifecycle: {condition: service_healthy}
     user: "${SANDBOX_UID}:${SANDBOX_GID}"
     network_mode: none
     environment:
       SANDBOX_SSH_KEY_LIFETIME: "${SANDBOX_SSH_KEY_LIFETIME:-8h}"
     volumes:
+      - *lifecycle-services
       - &ssh-keys {type: bind, source: "${SANDBOX_SSH_KEY_DIR:-${HOME}/.config/ai-coding-sandbox/ssh-keys}", target: /keys, read_only: true, bind: {create_host_path: false}}
       - {type: volume, source: ssh-socket, target: /run/ssh-agent}
 
@@ -416,6 +451,7 @@ services:
       - {type: volume, source: codex-state, target: /to/codex}
 
 volumes:
+  lifecycle:
   claude-state: {name: ai-coding-sandbox-claude-state, external: true}
   codex-state: {name: ai-coding-sandbox-codex-state, external: true}
   trust: {name: ai-coding-sandbox-trust, external: true}

@@ -80,6 +80,7 @@ jobs:
           - {target: session-proxy, name: proxy}
           - {target: session-forwarder, name: forwarder}
           - {target: session-ssh-agent, name: ssh-agent}
+          - {target: session-lifecycle, name: lifecycle}
     env:
       IMAGE: ghcr.io/${{ github.repository }}
       NAME: ${{ matrix.name }}

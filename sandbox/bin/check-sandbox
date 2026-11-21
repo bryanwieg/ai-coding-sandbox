@@ -18,16 +18,18 @@ mkdir -p "$check_dir/src/project"
 # agents' state volumes writable. Released images come from GHCR, never a build.
 session_file="$root_dir/compose.session.yaml"
 dev_file="$root_dir/compose.dev.yaml"
+check_project=sandbox-check
 render_session() (
     # Compose versions differ in whether they honor an inherited PWD.
     cd "$check_dir/src/project"
     env SANDBOX_UID=1000 SANDBOX_GID=1000 SANDBOX_DAEMON_EGRESS="${check_daemon_egress-}" \
         SANDBOX_REFERENCE="${check_reference-$check_dir}" \
         SANDBOX_PUBLISH_PORTS=8000-8001 SANDBOX_SSH_KEY_DIR=/tmp/sandbox-check-keys \
-        docker compose -p sandbox-check "$@" --profile '*' config --format json
+        docker compose -p "$check_project" "$@" --profile '*' config --format json
 )
 rendered_session=$(render_session -f "$session_file")
-printf '%s\n' "$rendered_session" | jq -e --arg reference "$check_dir" '
+other_volume=$(check_project=sandbox-check-other render_session -f "$session_file" | jq -r '.volumes.lifecycle.name')
+printf '%s\n' "$rendered_session" | jq -e --arg reference "$check_dir" --arg other_volume "$other_volume" '
     def root: test("^(0(:|$)|root(:|$))");
     def caps($name):
         if ($name | test("-state-init$|^migrate-")) then ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
@@ -36,8 +38,11 @@ printf '%s\n' "$rendered_session" | jq -e --arg reference "$check_dir" '
     def nets: (.networks // {}) | keys;
     def writable: [ (.volumes // [])[] | select(.read_only != true) ];
     .services as $s |
+    $s.lifecycle as $broker |
+    [$s | to_entries[] | .key as $name | .value.volumes[]? |
+        select(.source == "lifecycle") | {service: $name, mount: .}] as $socket_mounts |
     (($s | keys) == ["claude", "claude-state-init", "codex", "codex-state-init", "docker",
-        "egress-proxy", "migrate-claude-state", "migrate-codex-state", "publish",
+        "egress-proxy", "lifecycle", "migrate-claude-state", "migrate-codex-state", "publish",
         "ssh-agent", "ssh-unlock", "trust"]) and
     all($s | to_entries[]; .key as $name | .value |
         (.read_only == true) and
@@ -51,11 +56,32 @@ printf '%s\n' "$rendered_session" | jq -e --arg reference "$check_dir" '
         (if $name == "docker" then true
          else (.security_opt | index("no-new-privileges:true") != null) end) and
         (if (.user | root) then ($name | test("-state-init$|^migrate-|^trust$")) else true end) and
-        (if ($name | test("-state-init$|^migrate-|^trust$|^ssh-")) then .network_mode == "none" else true end) and
+        (if ($name | test("-state-init$|^migrate-|^trust$|^ssh-|^lifecycle$")) then .network_mode == "none" else true end) and
         (if $name == "publish" then true else ((.ports // []) | length == 0) end) and
         (if ([ (.volumes // [])[] | select(.target == "/keys") ] | length > 0)
          then ($name | test("^ssh-")) and all(.volumes[] | select(.target == "/keys"); .read_only == true)
          else true end)) and
+    # Only the broker writes the project-local volume. Daemon workloads
+    # can bind-mount daemon paths and must see only their own socket.
+    ((.volumes.lifecycle.external // false) == false) and
+    (.volumes.lifecycle.name == "sandbox-check_lifecycle") and
+    ($other_volume == "sandbox-check-other_lifecycle") and
+    ($broker.user == "13:13") and ($broker.restart == "on-failure") and
+    (($broker.depends_on // {} | length) == 0) and
+    ($broker.healthcheck.test == ["CMD", "/usr/local/bin/sandbox-lifecycle", "ready"]) and
+    (($broker.volumes | length) == 1) and
+    all($socket_mounts[].mount; .type == "volume" and .target == "/run/sandbox-lifecycle") and
+    ([$socket_mounts[] | [.service, .mount.volume.subpath, (.mount.read_only // false)]] | sort ==
+        [["claude", "agents", true], ["codex", "agents", true], ["docker", "daemon", true],
+         ["egress-proxy", "services", true], ["lifecycle", null, false], ["publish", "services", true],
+         ["ssh-agent", "services", true]]) and
+    # Services supervise their own children as PID 1. Agents run under tini.
+    all(["lifecycle", "egress-proxy", "docker", "publish", "ssh-agent"][]; $s[.].init != true) and
+    all(["claude", "codex", "egress-proxy", "docker", "publish", "ssh-agent"][];
+        $s[.].depends_on | has("lifecycle")) and
+    all($s[] | .depends_on | select(has("lifecycle")) | .lifecycle;
+        .condition == "service_healthy" and (has("required") == false or .required == true)) and
+    ($broker.stop_grace_period == null) and ($s.docker.stop_grace_period == "25s") and
     ($s.docker as $d |
         (($d.security_opt | sort) == ["label=disable", "seccomp=unconfined", "systempaths=unconfined"]) and
         ([ $d.devices[] | .source ] == ["/dev/net/tun"]) and
@@ -84,6 +110,7 @@ printf '%s\n' "$rendered_session" | jq -e --arg reference "$check_dir" '
     # can run the other; each keeps its GitHub login in its own state.
     ($s.claude.image == $s.codex.image) and
     all(["claude", "codex"][]; . as $name | $s[$name] |
+        (.init == true) and (.stop_grace_period == "15s") and
         ((.user | root) | not) and
         ((. | nets) == ["session-internal"]) and
         (.working_dir == "/workspace/sandbox-check") and

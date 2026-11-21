@@ -18,14 +18,12 @@ which pins every image by digest. These services make up a session:
 | --- | --- | --- |
 | `claude`, `codex` | named by the run | The agent, in the shared agent image with both agents' state volumes |
 | `claude-state-init`, `codex-state-init` | always | Give each state volume to your user; create the daemon's client certificate folder |
+| `lifecycle` | always | Coordinates the project's session group and stops it after the last session ends |
 | `egress-proxy` | always | The only route out: an allowlisting Squid proxy |
 | `docker` | `docker` | A rootless Docker daemon for the project |
 | `publish` | `publish` | Forwards `SANDBOX_PUBLISH_PORTS` from the host to the daemon |
 | `ssh-agent`, `ssh-unlock` | `ssh` | Serve SSH keys without exposing them |
 | `trust`, `migrate-*-state` | `tools` | Approve the egress policy; copy old state |
-
-The proxy, daemon and forwarder belong to the project's Compose project and
-stop on their own a few seconds after the last session ends.
 
 ## Set up a machine
 
@@ -80,14 +78,17 @@ sandbox/bin/install-shell-functions ~/.zshrc   # or name the file
 | `sandbox-init [--reference PATH] [--force]` | `sandbox-init-config` from the dedicated init image, offline, in this folder |
 | `sandbox [SERVICE [ARGS...]]` | At a Git repository's root without `.sandbox/env`, run `sandbox-init` and stage `.sandbox/`; approve egress, unlock SSH if enabled, then run the agent with Compose (default `claude`); other services run directly |
 | `sandbox-trust` | `sandbox trust`, then reload a running proxy whose policy changed |
-| `sandbox-unlock` | `sandbox ssh-unlock` |
+| `sandbox-unlock` | Unlock SSH keys for the running session group or for a session you start within two minutes |
+| `sandbox-stop` | Stop the project's sessions and services, keeping its volumes |
+| `sandbox-status` | Show the project's session group status |
 | `sandbox-prune` | Remove released sandbox images that a newer release replaced; runs after every `claude` or `codex` session |
 
 For `claude` and `codex`, including a shell or command in either image,
-`sandbox` first validates and automatically approves the project's egress
-policy. With the `ssh` profile enabled, it then unlocks SSH keys if none are
-loaded, prompting for passphrases when needed. Already-loaded keys keep their
-existing lifetime. A failed approval or unlock stops the launch.
+`sandbox` pulls missing images and builds images configured for local builds
+before starting any services. It waits for a stopping group, then validates
+and automatically approves the project's egress policy. With the `ssh`
+profile enabled, it unlocks SSH keys if none are loaded, prompting for
+passphrases when needed. A failed approval or unlock stops the launch.
 
 When a `claude` or `codex` session ends, successful or not, `sandbox` runs
 `sandbox-prune`. Each release pins its images by digest, so an update leaves
@@ -105,9 +106,10 @@ project's proxy is already running with a different policy, `sandbox` reloads
 it in place before launching; running sessions keep their open connections.
 A proxy from an older image, which cannot reload, is restarted instead, and
 the open connections of other sessions (an SSH login, a streaming request)
-drop once. Just before launching, `sandbox` also holds a running proxy and
-daemon up for 30 seconds, so neither stops between the previous session
-ending and the new one connecting.
+drop once. Just before launching, `sandbox` checks again and waits if the
+group is stopping, so the next group starts with the current settings. If
+services are still running at the wait limit, `sandbox` names and removes
+the stuck containers.
 
 These preparation steps belong to the optional shell function. Direct
 `docker compose` launches still require manual `trust` and `ssh-unlock`.
@@ -116,6 +118,79 @@ After updating this checkout, reload the functions with
 
 If your shell has `autocd` set and the functions are not loaded, typing
 `sandbox` changes into a folder of that name instead of failing.
+
+## Session lifecycle
+
+Each project's `lifecycle` service is the broker for its sessions and the
+services they share. Compose starts it first. The agent and service
+containers stay connected to the broker while their commands run.
+
+- `starting` waits up to 120 seconds for the first agent. Each join on the
+  services socket renews that window while the broker is in this state.
+- `active` lasts as long as at least one agent is connected, even when the
+  agent is waiting for input.
+- `idle` begins when the last agent disconnects. `sandbox` waits a few
+  seconds for the old group to stop so the next launch starts a fresh group
+  with the current settings. A launch can join an active group or a starting
+  group with at least 5 seconds left.
+- `draining` begins when the startup or idle window runs out, or when
+  `sandbox-stop` asks the broker to stop. The broker rejects joins and tells
+  every connected member to stop. It exits when all members disconnect or
+  the drain limit is reached.
+
+Sessions keep running during a broker update or restart while their wrappers
+reconnect. If a wrapper cannot reconnect within 30 seconds, it stops its
+command.
+
+The broker mounts the whole per-project `lifecycle` volume. Each client
+mounts only its role's subdirectory read-only at `/run/sandbox-lifecycle`
+and connects to `/run/sandbox-lifecycle/lifecycle.sock`.
+
+| Socket (broker path) | Mounted by (subpath) | Names admitted | Pool |
+| --- | --- | --- | --- |
+| `/run/sandbox-lifecycle/agents/lifecycle.sock` | claude, codex (`agents`) | `claude`, `codex` | 64 |
+| `/run/sandbox-lifecycle/services/lifecycle.sock` | egress-proxy, publish, ssh-agent (`services`) | `egress-proxy`, `publish`, `ssh-agent` | 16 |
+| `/run/sandbox-lifecycle/daemon/lifecycle.sock` | docker (`daemon`) | `docker` | 4 |
+
+Containers on the daemon can bind-mount paths from the daemon's container,
+so the daemon gets its own socket and connection pool. The control socket
+at `/tmp/sandbox-lifecycle-control.sock` is available only inside the broker
+container.
+
+| Setting | Value | Where |
+| --- | --- | --- |
+| Startup without an agent | 120 s | broker |
+| Idle after the last agent | 2 s | broker |
+| Join margin (`starting` is not joinable below it) | 5 s | broker |
+| Drain limit | 25 s | broker |
+| Rejoin window | 30 s | wrapper |
+| Admission retry at start | 10 s, every 250 ms | wrapper |
+| Join reply timeout | 2 s | wrapper and broker |
+| Hard exit after the grace | 2 s | wrapper |
+| Grace: egress-proxy, publish, ssh-agent | 5 s | wrapper |
+| Grace: docker | 22 s | wrapper |
+| Grace: claude, codex | 10 s | wrapper |
+| Compose `stop_grace_period`: docker / claude, codex | 25 s / 15 s | Compose |
+| Host wait for a stopping group (also `sandbox-stop`) | 40 s | `sandbox.sh` |
+
+Run `sandbox-status` from the project root to see the broker's state,
+whether the group is joinable, any time left in the startup or idle window,
+and the connected agents and services. It reports when no group is running.
+If a group will not stop, run `sandbox-stop` to drain it, remove any
+remaining project containers, and keep the project's volumes. To inspect
+the broker's logs before removing the container, run
+`docker compose --env-file .sandbox/env logs lifecycle`.
+
+`sandbox` labels each agent container and watches the launching shell. If
+the shell dies, the watcher stops and removes the container. `sandbox` also
+removes any container left behind when its Compose command returns. A plain
+`docker compose run` launch has no watcher and can leave its container
+running if the Compose client dies.
+
+Run `sandbox` again if an SSH passphrase prompt stays open past the two-minute
+startup window and the unlock fails. Also retry if a launch into an active
+group fails because all other sessions quit while Compose recreates a
+service whose settings changed.
 
 ## Set up a project
 
@@ -486,8 +561,8 @@ bind-mount it as on a normal host,
 `-v /var/run/docker.sock:/var/run/docker.sock`. It reaches the same rootless
 daemon with the same rights as the agent's TLS client: privileged containers
 stay refused and host paths stay out of reach. Container root owns it, so
-non-root containers need `group_add: ["0"]`. Only TCP clients count for the
-daemon's idle stop, so socket clients never keep it running.
+non-root containers need `group_add: ["0"]`. The daemon ends with the
+session group even if Docker clients are still connected.
 
 Containers have no direct Internet route. The daemon pulls through the proxy,
 so a registry must be allowed; the base policy has Docker Hub, GHCR and LSCR.
@@ -521,17 +596,11 @@ privileged containers) are unchanged. The agent's Docker client then sets no
 proxy for containers, since the proxy would only refuse destinations their
 route allows.
 
-The daemon starts empty and stops once no session holds a connection: each
-session keeps a background lease (`sandbox-docker-lease`), and the daemon
-stops after 10 idle seconds, or 120 seconds after starting if no session
-connects. With ephemeral data, it gives running containers 2 seconds to stop
-(`SANDBOX_DOCKER_STOP_TIMEOUT`) instead of Docker's 15, since their data is
-wiped next. Idle means no connection open and none made, checked every second,
-so even a session lasting a moment counts. Until a session connects, a
-starting daemon holds a connection to the proxy, which keeps the proxy up
-while a launch waits for the daemon. Its images, containers, volumes, build cache, logins and
-certificates are then gone; to keep the images, containers, volumes and build
-cache, see [Keeping Docker data](#keeping-docker-data).
+With ephemeral data, the daemon starts empty. When the session group ends,
+it gives running containers 2 seconds to stop by default
+(`SANDBOX_DOCKER_STOP_TIMEOUT`) before wiping its data. To keep images,
+containers, volumes and build cache, see
+[Keeping Docker data](#keeping-docker-data).
 
 ### Keeping Docker data
 
@@ -570,21 +639,21 @@ SANDBOX_PUBLISH_UDP_PORTS=7777-7778   # game traffic
 SANDBOX_PUBLISH_PORTS=27020           # RCON
 ```
 
-Relayed UDP reaches the container from the forwarder's address, not the
-client's, and each client's relay ends after 5 idle minutes. The `publish` service forwards each host port, on `127.0.0.1`
-unless `SANDBOX_PUBLISH_ADDRESS` says otherwise, to the same port on the
-daemon, so `docker run -p 8080:80 …` in the session serves
-`http://127.0.0.1:8080`. Use `0.0.0.0` only on a trusted network; an SSH
-tunnel to a loopback port is the safer way to reach a headless host. A host
-port that is already in use stops the launch.
+Relayed UDP reaches the container from the forwarder's address, and each
+client's relay ends after 5 minutes of inactivity. The `publish` service
+forwards each host port, on `127.0.0.1` unless `SANDBOX_PUBLISH_ADDRESS` says
+otherwise, to the same port on the daemon, so `docker run -p 8080:80 …` in
+the session serves `http://127.0.0.1:8080`. Use `0.0.0.0` only on a trusted
+network; an SSH tunnel to a loopback port is the safer way to reach a headless
+host. A host port that is already in use stops the launch.
 
 Containers publish UDP the usual way (`-p 7777:7777/udp`).
 
-The forwarder runs as `nobody`, read-only, with no capabilities or mounts. It
-joins the internal network and `session-publish`, the only other network
-outside the proxy, which has outbound NAT disabled: traffic enters only from
-the host and nothing reaches the Internet through it. The forwarder exits with
-the daemon.
+The forwarder runs as `nobody`, read-only, with no capabilities and only its
+read-only lifecycle socket mount. It joins the internal network and
+`session-publish`, the only other network outside the proxy. With outbound
+NAT disabled, traffic on `session-publish` enters only from the host. The
+forwarder ends with the session group.
 
 ## SSH
 
@@ -593,8 +662,10 @@ outside the project and every reference folder, in `~/.config/ai-coding-sandbox/
 `SANDBOX_SSH_KEY_DIR`, at mode `0600`. Passphrases are optional; without one,
 anyone who can read a private key file can use it. A session refuses to
 start when the key folder is inside the project or reference folder. The
-`sandbox` shell command unlocks keys automatically when none are loaded.
-For direct Compose launches, load them once per `SANDBOX_SSH_KEY_LIFETIME`:
+`sandbox` shell command unlocks keys automatically when none are loaded. If
+its final check waits for a group to stop, it unlocks again for the new group.
+For direct Compose launches, use the command below to unlock keys. If it
+starts a new group, start a session within two minutes.
 
 ```sh
 sandbox-unlock    # docker compose --env-file .sandbox/env run --rm ssh-unlock
@@ -605,8 +676,9 @@ for a passphrase only when a key requires one. It refuses keys readable by
 others. Only those two services mount the key folder, and neither has a
 network. Sessions get only the agent's socket (`SSH_AUTH_SOCK`), so they can
 authenticate with the keys but cannot read or copy them. The `ssh-agent`
-service runs until its keys expire, and a session warns when none are
-unlocked.
+service and its unlocked keys end with the session group. Keys can expire
+earlier according to `SANDBOX_SSH_KEY_LIFETIME`, and a session warns when
+none are unlocked.
 
 `ssh host` then works for names in the project policy's `ssh` list, through
 the proxy. Put `User` and other client settings in `.sandbox/ssh/config` and
@@ -848,12 +920,14 @@ and one `agent` target with both CLIs, each installed in its own stage and
 layer from its pinned manifest (`claude/package.json` under `/opt/claude`,
 `codex/package.json` under `/opt/codex`); `sandbox-agent-version claude` or
 `codex` prints either version. The other targets are `session-init`,
-`session-daemon`, `session-proxy`, `session-forwarder` and
-`session-ssh-agent`.
+`session-lifecycle`, `session-daemon`, `session-proxy`, `session-forwarder`
+and `session-ssh-agent`.
 
 `ENTRYPOINT` is `sandbox-entrypoint`, which supplies the runtime user's
-identity and starts the session leases for every command. The default `CMD`,
-`sandbox-start`, runs the executable scripts in
+identity and joins the broker through `sandbox-lifecycle run` when
+`SANDBOX_SESSION=1`. The proxy, daemon, forwarder and SSH agent images run
+their service scripts under `sandbox-lifecycle run`. The agent's default
+`CMD`, `sandbox-start`, runs the executable scripts in
 `/usr/local/libexec/sandbox/init.d/` in name order, then those of the agent
 `SANDBOX_AGENT` names in `/usr/local/libexec/sandbox/<agent>/init.d/`, then
 the other agent's, and then runs the named agent's launcher,
@@ -871,7 +945,7 @@ initializer script and standard system tools.
 `release.yml` publishes every image to `ghcr.io/bryanwieg/ai-coding-sandbox` on
 a push to `main` that changes an image input (host-side scripts, tests and
 documentation do not), weekly to refresh apt and apk packages,
-and on manual runs. All six images rebuild together, sharing BuildKit layers
+and on manual runs. All seven images rebuild together, sharing BuildKit layers
 through the GitHub Actions cache.
 
 Each release gets an ID from its UTC date, such as `2026.11.19`, with `_1`,
@@ -884,6 +958,7 @@ single agent version names it; `sandbox-agent-version` reports each:
 | --- | --- | --- |
 | Agents (Claude Code and Codex) | `agent-<release ID>` | `agent-latest` |
 | Project initializer | `init-<release ID>` | `init-latest` |
+| Lifecycle broker | `lifecycle-<image version>` | `lifecycle-latest` |
 | Session daemon | `docker-daemon-<release ID>` | `docker-daemon-latest` |
 | Egress proxy | `proxy-<release ID>` | `proxy-latest` |
 | Port forwarder | `forwarder-<release ID>` | `forwarder-latest` |
@@ -975,8 +1050,9 @@ inside: identity, capabilities, read-only paths, `/tmp` reset, state
 persistence, egress only through the allowlist, the daemon's isolation (TLS,
 user mapping, only the project visible, its socket for containers, no direct
 route, HTTPS proxy only), bind mounts, a published port reaching the host,
-refused privileged containers, the leases, and every service stopping after
-the session:
+refused privileged containers, lifecycle socket isolation, session survival
+across a broker restart, and group shutdown after the last session or an
+explicit stop.
 
 ```sh
 sandbox/bin/audit-sandbox

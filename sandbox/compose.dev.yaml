@@ -12,6 +12,10 @@ x-dev: &dev
   pull_policy: build
 
 services:
+  lifecycle:
+    <<: *dev
+    image: ai-coding-sandbox-dev:lifecycle
+    build: {context: ., target: session-lifecycle}
   claude:
     <<: *dev
     image: ai-coding-sandbox-dev:agent

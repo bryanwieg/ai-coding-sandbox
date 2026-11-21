@@ -5,8 +5,8 @@
 # inside: identity and capabilities, read-only mounts, egress only through the
 # proxy's allowlist, the session daemon's isolation, its opt-in direct egress
 # (containers route out directly while the agent still cannot), project bind
-# mounts and a published port reaching the host, and the daemon, forwarder and proxy
-# stopping once the session ends. Runs locally; GitHub's runners cannot
+# mounts and a published port reaching the host, lifecycle socket isolation,
+# broker restart, explicit stop and shutdown after the last session. Runs locally; GitHub's runners cannot
 # start the daemon, so CI passes --no-docker, which audits sessions without
 # the docker and publish profiles. Run it after changing networks, mounts,
 # privileges or the proxy.
@@ -37,18 +37,24 @@ COMPOSE_FILE="$root_dir/compose.session.yaml,$root_dir/compose.dev.yaml,$audit_d
 COMPOSE_PROJECT_NAME=$project_name
 if [ "$audit_docker" = true ]; then
     COMPOSE_PROFILES=docker,publish
-    session_services='egress-proxy docker publish'
+    session_services='lifecycle egress-proxy docker publish'
 else
     COMPOSE_PROFILES=
-    session_services=egress-proxy
+    session_services='lifecycle egress-proxy'
 fi
 SANDBOX_PUBLISH_PORTS=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 export COMPOSE_PATH_SEPARATOR COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES SANDBOX_PUBLISH_PORTS
 port=$SANDBOX_PUBLISH_PORTS
 
 cleanup() {
+    # A failed audit can leave a one-off session attached to its network.
+    docker ps -aq --filter "label=com.docker.compose.project=$project_name" |
+        xargs -r docker rm -f >/dev/null 2>&1 || true
     (cd "$project" 2>/dev/null && docker compose --env-file .sandbox/env --profile '*' \
         down --volumes --remove-orphans >/dev/null 2>&1) || true
+    # The direct-egress network is outside the configuration used by down.
+    docker network ls -q --filter "label=com.docker.compose.project=$project_name" |
+        xargs -r docker network rm >/dev/null 2>&1 || true
     for volume in claude-state codex-state trust; do
         docker volume rm "$project_name-$volume" >/dev/null 2>&1 || true
     done
@@ -89,15 +95,30 @@ AUDIT_BUSYBOX=$busybox
 AUDIT_PROJECT=/workspace/$project_name
 export AUDIT_UID AUDIT_PORT AUDIT_BUSYBOX AUDIT_PROJECT
 session() {
-    # Images were built explicitly below. The dev overlay's pull_policy:
-    # build would rebuild here, letting an idle proxy stop before launch.
+    # Back-to-back sessions may change service settings. Let the previous
+    # group finish draining before Compose starts or recreates its services.
+    if group_status=$(docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status 2>/dev/null) &&
+        ! printf '%s\n' "$group_status" | grep -Fxq 'joinable=yes'; then
+        deadline=$(($(date +%s) + 40))
+        while :; do
+            # shellcheck disable=SC2086
+            running=$(docker compose --env-file .sandbox/env ps -q --status running $session_services) || return 1
+            [ -n "$running" ] || break
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+                # shellcheck disable=SC2086
+                names=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' $running) || return 1
+                fail "session services still running after 40s: $names"
+                return 1
+            fi
+            sleep 1
+        done
+    fi
+    # Reuse the images built below despite the dev overlay's pull_policy: build.
     docker compose --env-file .sandbox/env run --pull never --rm -T \
         -e AUDIT_UID -e AUDIT_PORT -e AUDIT_BUSYBOX -e AUDIT_PROJECT "$1" sh -ceu "$2"
 }
 
-# Build every image before the first session. A build between sessions can
-# outlast the services' idle window, so the proxy would stop while the next
-# launch starts.
+# Build every image before starting the session group.
 # shellcheck disable=SC2086
 docker compose --env-file .sandbox/env build --quiet claude claude-state-init codex codex-state-init $session_services
 
@@ -144,9 +165,13 @@ for agent in claude codex; do
         test "$XDG_CONFIG_HOME" = "$CLAUDE_CONFIG_DIR/xdg" &&
             grep -Fxq audit,task "$XDG_CONFIG_HOME/ponytail/band/audit.csv" && echo plugin-config-persists
         test ! -e /var/run/docker.sock && test ! -e /run/docker.sock && echo no-host-socket
+        test "$(ls -A /run/sandbox-lifecycle)" = lifecycle.sock &&
+            test -S /run/sandbox-lifecycle/lifecycle.sock &&
+            test ! -e /tmp/sandbox-lifecycle-control.sock &&
+            ! sandbox-lifecycle status >/dev/null 2>&1 && echo lifecycle-socket-only
+        grep -Eq "^[^ ]+ /run/sandbox-lifecycle [^ ]+ ro(,| )" /proc/mounts && echo lifecycle-read-only
         # /tmp is noexec; go test runs its binary from GOTMPDIR in the
-        # cache volume of the project. Kept short (no cgo or -race, which
-        # test-go.sh covers) so the session daemon does not idle out.
+        # cache volume of the project. test-go.sh covers cgo and -race.
         go_project=$(mktemp -d) && cd "$go_project" && go mod init audit.test/probe >/dev/null 2>&1 &&
             printf "package probe\n\nimport \"testing\"\n\nfunc TestCache(t *testing.T) {}\n" > probe_test.go &&
             go test . >/dev/null && test "$(go env GOTMPDIR)" = /cache/go/tmp && cd - >/dev/null && echo go-cache-volume
@@ -164,7 +189,7 @@ for agent in claude codex; do
     output_reported=false
     for expected in identity both-agents no-capabilities no-new-privileges working-directory agent-environment project-writable \
         reference-read-only config-read-only root-read-only home-read-only tmp-reset state-persists plugin-config-persists \
-        no-host-socket go-cache-volume allowlisted-https \
+        no-host-socket lifecycle-socket-only lifecycle-read-only go-cache-volume allowlisted-https \
         unlisted-https-refused no-direct-route; do
         if printf '%s\n' "$output" | grep -Fxq "$expected"; then
             pass "$agent: $expected"
@@ -203,6 +228,235 @@ for agent in claude codex; do
 done
 unset SANDBOX_REFERENCE
 
+for action in restart stop; do
+    session claude 'exec sleep 60' > "$audit_dir/$action.log" 2>&1 &
+    session_pid=$!
+    deadline=$(($(date +%s) + 300))
+    until docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status 2>/dev/null |
+        grep -Fxq 'agents=claude'; do
+        if ! kill -0 "$session_pid" 2>/dev/null || [ "$(date +%s)" -ge "$deadline" ]; then
+            fail "no running agent for the broker $action check: $(cat "$audit_dir/$action.log")"
+            exit 1
+        fi
+        sleep 1
+    done
+
+    if [ "$action" = restart ]; then
+        docker compose --env-file .sandbox/env restart --no-deps lifecycle
+        sleep 10
+        if kill -0 "$session_pid" 2>/dev/null &&
+            docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status | grep -Fxq 'agents=claude' &&
+            wait "$session_pid"; then
+            pass 'broker restart keeps sessions'
+        else
+            fail "broker restart interrupted the session or it did not rejoin: $(cat "$audit_dir/$action.log")"
+            exit 1
+        fi
+    else
+        deadline=$(($(date +%s) + 30))
+        docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle stop
+        while :; do
+            running=$(docker compose --env-file .sandbox/env --profile '*' ps -a -q --status running)
+            if [ -z "$running" ] && ! kill -0 "$session_pid" 2>/dev/null; then
+                break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+                fail 'sandbox-stop did not drain the running session and services within 30s'
+                exit 1
+            fi
+            sleep 1
+        done
+        wait "$session_pid" || :
+        pass 'sandbox-stop drains running sessions'
+    fi
+done
+
+host_functions=$root_dir/shell/sandbox.sh
+project_filter=label=com.docker.compose.project=$project_name
+
+# Keep the admitting status for the caller, and wait for its fixture if needed.
+wait_for_agent() {
+    deadline=$(($(date +%s) + 300))
+    while :; do
+        if ! kill -0 "$launcher" 2>/dev/null; then
+            fail "launcher exited before the agent was ready ($log): $(cat "$log")"
+            exit 1
+        fi
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            kill -KILL "$launcher" 2>/dev/null || :
+            wait "$launcher" 2>/dev/null || :
+            fail "timed out waiting for the agent ($log): $(cat "$log")"
+            exit 1
+        fi
+        status=$(docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status 2>/dev/null) || status=
+        if printf '%s\n' "$status" | grep -Fxq 'agents=claude' && "$@"; then
+            return
+        fi
+        sleep 1
+    done
+}
+
+stop_audit_group() {
+    bash -c '. "$1" && sandbox-stop' bash "$host_functions"
+    running=$(docker ps -q --filter "$project_filter")
+    if [ -n "$running" ]; then
+        fail "sandbox-stop left containers running: $running"
+        exit 1
+    fi
+}
+
+log=$audit_dir/host-stop.log
+# wait is interruptible, so the shell handles TERM while sleep runs.
+session claude 'trap "touch host-stop-term; exit 0" TERM; touch host-stop-ready; sleep 60 & wait' > "$log" 2>&1 &
+launcher=$!
+wait_for_agent test -e host-stop-ready
+one_off=$(docker compose --env-file .sandbox/env run -d --pull never claude true)
+if [ "$(timeout 30 docker wait "$one_off")" != 0 ]; then
+    fail 'the disposable one-off did not finish successfully'
+    exit 1
+fi
+if ! bash -c '. "$1" && sandbox-status' bash "$host_functions" | grep -Fxq 'agents=claude'; then
+    fail 'host sandbox-status did not list the session'
+    exit 1
+fi
+pass 'host sandbox-status lists the session'
+if ! timeout 40 bash -c '. "$1" && sandbox-stop' bash "$host_functions"; then
+    fail 'host sandbox-stop did not finish successfully within 40s'
+    exit 1
+fi
+containers=$(docker ps -aq --filter "$project_filter")
+if [ -n "$containers" ] || [ ! -e host-stop-term ]; then
+    fail "host sandbox-stop left containers ($containers) or the agent missed TERM"
+    exit 1
+fi
+wait "$launcher" || :
+pass 'host sandbox-stop ends and removes the group'
+
+watcher_container_running() {
+    orphan=$(docker ps -q --filter "$project_filter" --filter label=ai-coding-sandbox.client) || exit 1
+    [ -n "$orphan" ]
+}
+
+log=$audit_dir/watcher.log
+bash -c '. "$1" && sandbox claude sleep 300' bash "$host_functions" </dev/null > "$log" 2>&1 &
+launcher=$!
+wait_for_agent watcher_container_running
+deadline=$(($(date +%s) + 30))
+kill -KILL "$launcher"
+wait "$launcher" 2>/dev/null || :
+while :; do
+    left=$(docker ps -aq --filter "$project_filter" --filter "id=$orphan")
+    if [ -z "$left" ] && [ "$(date +%s)" -le "$deadline" ]; then break; fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        fail "host watcher left orphaned container $orphan: $(cat "$log")"
+        exit 1
+    fi
+    sleep 1
+done
+stop_audit_group
+pass 'host watcher stops an orphaned launch'
+
+log=$audit_dir/startup-window.log
+docker compose --env-file .sandbox/env up -d --pull never lifecycle egress-proxy
+broker_id=$(docker compose --env-file .sandbox/env ps -q lifecycle)
+started_at=$(docker inspect -f '{{.State.StartedAt}}' "$broker_id")
+started=$(date -d "$started_at" +%s)
+for offset in 10 100; do
+    delay=$((started + offset - $(date +%s)))
+    if [ "$delay" -gt 0 ]; then sleep "$delay"; fi
+    status=$(docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status)
+    remaining=$(printf '%s\n' "$status" | sed -n 's/^remaining=//p')
+    if [ "$offset" = 10 ]; then
+        if ! printf '%s\n' "$status" | grep -Fxq 'services=egress-proxy'; then
+            fail "the proxy did not join the starting broker: $status"
+            exit 1
+        fi
+        early_remaining=$remaining
+    fi
+done
+if ! [ "$remaining" -lt "$early_remaining" ]; then
+    fail "startup window did not decrease: $early_remaining then $remaining"
+    exit 1
+fi
+before_restart=$remaining
+docker compose --env-file .sandbox/env restart --no-deps egress-proxy
+deadline=$(($(date +%s) + 10))
+while :; do
+    status=$(docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status)
+    remaining=$(printf '%s\n' "$status" | sed -n 's/^remaining=//p')
+    if printf '%s\n' "$status" | grep -Fxq 'services=egress-proxy' &&
+        [ "$remaining" -ge 110 ] && [ "$remaining" -gt "$before_restart" ]; then
+        break
+    fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        fail "proxy rejoin did not reset the startup window (before restart: $before_restart): $status"
+        exit 1
+    fi
+    sleep 1
+done
+delay=$((started + 130 - $(date +%s)))
+if [ "$delay" -gt 0 ]; then sleep "$delay"; fi
+if [ "$(docker compose --env-file .sandbox/env ps -q lifecycle)" != "$broker_id" ] ||
+    [ "$(docker inspect -f '{{.State.StartedAt}}' "$broker_id")" != "$started_at" ] ||
+    ! docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status | grep -Fxq 'state=starting'; then
+    fail 'the original broker did not stay in starting past its first startup window'
+    exit 1
+fi
+session claude '
+    for _ in $(seq 300); do
+        [ -e startup-window-admitted ] && exit 0
+        sleep 1
+    done
+    echo "timed out waiting for startup-window-admitted" >&2
+    exit 1
+' > "$log" 2>&1 &
+launcher=$!
+wait_for_agent true
+touch startup-window-admitted
+if ! wait "$launcher" ||
+    [ "$(docker compose --env-file .sandbox/env ps -a -q lifecycle)" != "$broker_id" ] ||
+    [ "$(docker inspect -f '{{.State.StartedAt}}' "$broker_id")" != "$started_at" ]; then
+    fail "the original broker did not admit the session: $(cat "$log")"
+    exit 1
+fi
+stop_audit_group
+pass 'a helper join extends the startup window'
+
+log=$audit_dir/recreation.log
+session claude 'exec sleep 60' > "$log" 2>&1 &
+launcher=$!
+wait_for_agent true
+broker_id=$(docker compose --env-file .sandbox/env ps -q lifecycle)
+agent_id=$(docker ps -q --filter "$project_filter" --filter label=com.docker.compose.service=claude)
+services=$(printf '%s\n' "$status" | sed -n 's/^services=//p')
+if [ -z "$broker_id" ] || [ -z "$agent_id" ] || [ -z "$services" ]; then
+    fail "missing broker, agent or services before recreation: $status"
+    exit 1
+fi
+deadline=$(($(date +%s) + 30))
+docker compose --env-file .sandbox/env up -d --no-deps --force-recreate --pull never lifecycle
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    new_id=$(docker compose --env-file .sandbox/env ps -q lifecycle)
+    status=$(docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status 2>/dev/null) || status=
+    if [ -n "$new_id" ] && [ "$new_id" != "$broker_id" ] &&
+        printf '%s\n' "$status" | grep -Fxq 'agents=claude' &&
+        [ "$(docker inspect -f '{{.State.Running}}' "$agent_id")" = true ]; then
+        joined=$(printf '%s\n' "$status" | sed -n 's/^services=//p')
+        all_joined=true
+        for service in $services; do
+            case " $joined " in *" $service "*) ;; *) all_joined=false ;; esac
+        done
+        if "$all_joined"; then break; fi
+    fi
+    sleep 1
+done
+if [ "$(date +%s)" -ge "$deadline" ] || ! wait "$launcher"; then
+    fail "broker recreation interrupted the session or its services: $status; $(cat "$log")"
+    exit 1
+fi
+stop_audit_group
+pass 'broker recreation keeps sessions'
+
 if [ "$audit_docker" = true ]; then
     # The daemon is rootless, needs the client certificate, maps inner root to
     # the user, sees only the project, offers containers its socket at the
@@ -220,6 +474,9 @@ if [ "$audit_docker" = true ]; then
             test "$(stat -c %u inner-write)" = "$AUDIT_UID" && rm inner-write && echo root-is-user
         daemon_ls() { docker run --rm -v /:/daemon-root "$AUDIT_BUSYBOX" ls -A "/daemon-root$1"; }
         test "$(daemon_ls /workspace)" = "${AUDIT_PROJECT#/workspace/}" && echo only-the-project
+        test "$(daemon_ls /run/sandbox-lifecycle)" = lifecycle.sock &&
+            test "$(docker run --rm -v /run/sandbox-lifecycle:/lifecycle:ro "$AUDIT_BUSYBOX" ls -A /lifecycle)" = lifecycle.sock &&
+            echo daemon-socket-isolated
         test ! -e "$SANDBOX_DOCKER_SOCKET" &&
             docker run --rm -v "$SANDBOX_DOCKER_SOCKET:/var/run/docker.sock" "$AUDIT_BUSYBOX" test -S /var/run/docker.sock &&
             echo daemon-socket
@@ -236,7 +493,7 @@ if [ "$audit_docker" = true ]; then
             sleep 1
         done
     ' 2>&1 || :)
-    for expected in rootless certificate-required root-is-user only-the-project daemon-socket no-direct-route \
+    for expected in rootless certificate-required root-is-user only-the-project daemon-socket-isolated daemon-socket no-direct-route \
         unlisted-refused https-proxy-only plain-http-between-containers; do
         if printf '%s\n' "$output" | grep -Fxq "$expected"; then
             pass "daemon: $expected"
@@ -273,7 +530,7 @@ if [ "$audit_docker" = true ]; then
     else
         fail "privileged containers: $(cat privileged 2>/dev/null || echo unknown)"
     fi
-    # Longer than the daemon's idle cutoff: only the session's lease keeps it up.
+    # An idle session keeps the group up well past the broker's 2s idle window.
     sleep 25
     if [ "$(curl -s --max-time 10 "http://127.0.0.1:$port/marker")" = bind-mount-ok ]; then
         pass "a published port reaches the host at 127.0.0.1:$port"
@@ -283,7 +540,7 @@ if [ "$audit_docker" = true ]; then
     touch finished
     wait "$session_pid" || fail "the Docker session failed: $(cat "$audit_dir/daemon.log")"
     if [ -e alive ]; then
-        pass 'the session lease keeps the daemon up while the session is idle'
+        pass 'the session group keeps the daemon up while the session is idle'
     else
         fail 'the daemon stopped while the session was still running'
     fi
@@ -315,23 +572,25 @@ if [ "$audit_docker" = true ]; then
             fail "direct egress: $expected"
         fi
     done
+else
+    # Exercise normal last-agent departure after the explicit stop above.
+    session claude ':'
 fi
 
-# A session shorter than the proxy's idle check may go unseen, and the proxy
-# then stops only at the end of its 120-second start grace.
-stopped=false
-for _ in $(seq 150); do
+# Allow for the broker's 2s idle window and the daemon's 22s shutdown grace.
+deadline=$(($(date +%s) + 60))
+while :; do
     # shellcheck disable=SC2086
-    if [ -z "$(docker compose --env-file .sandbox/env ps --quiet $session_services)" ]; then
-        stopped=true
-        break
-    fi
+    running=$(docker compose --env-file .sandbox/env ps -q --status running $session_services)
+    [ -n "$running" ] || break
+    [ "$(date +%s)" -lt "$deadline" ] || break
     sleep 1
 done
-if [ "$stopped" = true ]; then
-    pass "the session services stop once the session ends: $session_services"
+running=$(docker compose --env-file .sandbox/env --profile '*' ps -a -q --status running)
+if [ -z "$running" ]; then
+    pass "the group stops after the last session: $session_services"
 else
-    fail "a session service kept running after the session ended: $session_services"
+    fail "containers kept running after the last session: $running"
     docker compose --env-file .sandbox/env ps --all >&2
     # shellcheck disable=SC2086
     docker compose --env-file .sandbox/env logs --tail 20 $session_services >&2
