@@ -45,9 +45,10 @@ sandbox-prune      # remove superseded sandbox images; runs after each session
 `docker compose --env-file .sandbox/env run --rm claude`. The functions are
 optional; direct Compose launches require manual approval and unlocking.
 Each agent signs itself and GitHub in on first use.
-Sign-ins, sessions, memory and plugins are shared by all projects; each
-project has its own proxy and Docker daemon, which stop once no session uses
-them.
+Sign-ins, sessions, memory and plugins are shared by all projects.
+Each project's services start with its first session and stop shortly after
+its last, and you can inspect or stop the group with `sandbox-status` or
+`sandbox-stop`.
 
 ## Documentation
 
