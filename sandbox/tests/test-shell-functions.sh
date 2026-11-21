@@ -491,7 +491,6 @@ services=docker' ]
             print "    echo updated-launcher >&2"
             print "    echo updated-launcher >> \"$SANDBOX_TEST_LOG\""
         }' "$current" > "$changed"
-    grep -Fxq '    echo updated-launcher >&2' "$changed"
     plain="${trust}${launch}${agent}claude "
     updated="sandbox: updated the shell functions from file://$changed and loaded them into this shell."
     reloaded='sandbox: loaded the shell functions updated since this shell started.'
