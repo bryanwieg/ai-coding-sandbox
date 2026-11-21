@@ -132,7 +132,7 @@ COPY --chmod=0644 squid/base-policy.yaml /etc/squid/base-policy.yaml
 COPY --chmod=0755 image/sandbox-policy image/sandbox-proxy image/sandbox-proxy-config \
     image/sandbox-trust /usr/local/bin/
 COPY --from=lifecycle-build --chmod=0755 /out/sandbox-lifecycle /usr/local/bin/sandbox-lifecycle
-ENTRYPOINT ["/usr/local/bin/sandbox-proxy"]
+ENTRYPOINT ["/usr/local/bin/sandbox-lifecycle", "run", "egress-proxy", "--", "/usr/local/bin/sandbox-proxy"]
 USER 13:13
 
 # Shared, agent-independent tooling. Each agent target below adds only its own

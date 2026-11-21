@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck source-path=SCRIPTDIR
 # Runtime test for the session-proxy image on an internal network, with a fake
 # upstream instead of the Internet: base names are allowed and others denied;
 # project additions apply only once approved for that project folder; comment
@@ -8,7 +9,7 @@
 # invalid policies fall back to the base policy; and the proxy cannot
 # write its trust store; it records the project policy hash it applied; it
 # reloads an approved change in place, keeping its connections; and it
-# stops once no session holds a connection and no launch hold is fresh.
+# stops with the session group, even with an open CONNECT tunnel.
 set -eu
 
 sandbox_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -17,14 +18,18 @@ prefix=sandbox-proxy-test-$$
 network=$prefix-net
 trust=$prefix-trust
 proxy=$prefix-proxy
+proxy_broker=$prefix-broker
 folder=/projects/demo
 test_dir=$(mktemp -d)
 policy=$test_dir/egress-policy.yaml
 failures=0
 
+# shellcheck source=lifecycle-helper.sh
+. "$sandbox_dir/tests/lifecycle-helper.sh"
+
 cleanup() {
     docker ps -aq --filter "label=$prefix" | xargs -r docker rm -f -v >/dev/null 2>&1 || :
-    docker volume rm "$trust" >/dev/null 2>&1 || :
+    docker volume ls -q --filter "label=$prefix" | xargs -r docker volume rm >/dev/null 2>&1 || :
     docker network rm "$network" >/dev/null 2>&1 || :
     rm -rf "$test_dir"
 }
@@ -34,9 +39,12 @@ pass() { printf 'ok   %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; failures=$((failures + 1)); }
 
 docker build --quiet --target session-proxy --tag "$image" "$sandbox_dir" >/dev/null
+lifecycle_build
+lifecycle_start "$proxy_broker"
+lifecycle_hold "$proxy_broker" "$image"
 docker network create --internal --label "$prefix" "$network" >/dev/null
 # Like the real trust volume, created empty and root-owned before first use.
-docker volume create "$trust" >/dev/null
+docker volume create --label "$prefix" "$trust" >/dev/null
 docker run -d --name "$prefix-upstream" --label "$prefix" --network "$network" busybox:1.37 \
     sh -c 'mkdir /w && echo pinned-ok > /w/index.html &&
         httpd -p 22 -h /w && httpd -p 2222 -h /w && httpd -p 2223 -h /w &&
@@ -51,9 +59,10 @@ start_proxy() {
     proxy_folder=${1:-$folder}
     [ "$#" -eq 0 ] || shift
     docker rm -f -v "$proxy" >/dev/null 2>&1 || :
+    # shellcheck disable=SC2046 # lifecycle_mount prints the two mount arguments.
     docker run -d --name "$proxy" --label "$prefix" --network "$network" --network-alias egress-proxy \
         --user 13:13 --read-only --cap-drop ALL --security-opt no-new-privileges \
-        --tmpfs /run --tmpfs /tmp:mode=1777 \
+        --tmpfs /run --tmpfs /tmp:mode=1777 $(lifecycle_mount "$proxy_broker" services) \
         --tmpfs /var/log/squid:uid=13,gid=13,mode=0755 --tmpfs /var/spool/squid:uid=13,gid=13,mode=0755 \
         -v "$policy:/etc/squid/project-policy.yaml:ro" -v "$trust:/trust:ro" \
         -e "HOST_PWD=$proxy_folder" "$@" "$image" >/dev/null
@@ -367,76 +376,53 @@ sleep 1
 expect_status 403 fake.example 'a reload with an unapproved change falls back to the base policy'
 check 'a reload to the base policy records an empty applied policy' applied ''
 
-# Lifetime: the proxy stops without a session, stays while a session holds an
-# idle connection (as sandbox-proxy-lease does), and stops once it ends.
-stopped_within() {
-    tries=0
-    while [ "$(docker inspect -f '{{.State.Running}}' "$proxy" 2>/dev/null)" = true ]; do
-        tries=$((tries + 1))
-        [ "$tries" -lt "$1" ] || return 1
-        sleep 1
-    done
+# Drain a fresh broker while the proxy has a CONNECT tunnel to the fake upstream.
+proxy_broker=$prefix-drain
+lifecycle_start "$proxy_broker"
+printf 'https:\n  - fake.example\nhosts:\n  fake.example: %s\n' "$upstream" > "$policy"
+trust_cmd '' "$folder" --yes >/dev/null
+start_proxy
+docker run -d --name "$prefix-tunnel" --label "$prefix" --network "$network" busybox:1.37 \
+    sh -c '(printf "CONNECT fake.example:443 HTTP/1.1\r\nHost: fake.example:443\r\n\r\n"; sleep 60) |
+        nc egress-proxy 3128 > /tmp/reply' >/dev/null
+docker exec "$prefix-tunnel" timeout 10 sh -c \
+    'until grep -q "^HTTP/1\.[01] 200 " /tmp/reply; do sleep 0.1; done' || {
+    echo 'The CONNECT tunnel did not open before the drain.' >&2
+    exit 1
 }
-lifetime='-e SANDBOX_PROXY_START_GRACE=3 -e SANDBOX_PROXY_IDLE_INTERVAL=1'
-# shellcheck disable=SC2086
-start_proxy "$folder" $lifetime
-if stopped_within 20 && docker logs "$proxy" 2>&1 | grep -Fq 'no session connected within 3s'; then
-    pass 'the proxy stops when no session connects'
+
+# The wrapper escalates to SIGKILL after 5 s. Measure the proxy's exit
+# independently of the time Docker takes to finish stopping the broker.
+drain_start_ms=$(date +%s%3N)
+lifecycle_drain "$proxy_broker" &
+drain_pid=$!
+proxy_exit=$(timeout 10 docker wait "$proxy") || proxy_exit="docker wait exited $?"
+elapsed_ms=$(( $(date +%s%3N) - drain_start_ms ))
+wait "$drain_pid" || fail 'the broker failed to drain'
+if [ "$proxy_exit" = 0 ] && [ "$elapsed_ms" -le 4000 ]; then
+    pass "the proxy drained with an open tunnel in ${elapsed_ms} ms (exit 0)"
 else
-    fail 'the proxy kept running without a session'
-fi
-# shellcheck disable=SC2086
-start_proxy "$folder" $lifetime
-docker run -d --name "$prefix-session" --label "$prefix" --network "$network" busybox:1.37 \
-    sh -c 'sleep 600 | nc egress-proxy 3128' >/dev/null
-sleep 8
-if [ "$(docker inspect -f '{{.State.Running}}' "$proxy")" = true ]; then
-    pass 'the proxy stays up past the grace period while a session holds a connection'
-else
-    fail 'the proxy stopped although a session held a connection'
-fi
-docker rm -f "$prefix-session" >/dev/null
-if stopped_within 20 && docker logs "$proxy" 2>&1 | grep -Fq 'no session connected; stopping'; then
-    pass 'the proxy stops once the last session ends'
-else
-    fail 'the proxy kept running after the session ended'
+    fail "drain with an open tunnel took ${elapsed_ms} ms (exit $proxy_exit)"
 fi
 
-# Sessions shorter than one check still count: a connection made and closed
-# between two checks is seen as activity, so back-to-back brief sessions keep
-# the proxy up. Open connections alone would miss most of these.
-# shellcheck disable=SC2086
-start_proxy "$folder" $lifetime -e SANDBOX_PROXY_IDLE_CHECKS=2
-docker run -d --name "$prefix-brief" --label "$prefix" --network "$network" busybox:1.37 \
-    sh -c 'while :; do timeout 0.1 nc egress-proxy 3128 </dev/null; sleep 0.9; done' >/dev/null
-sleep 10
-if [ "$(docker inspect -f '{{.State.Running}}' "$proxy")" = true ]; then
-    pass 'brief sessions between checks keep the proxy up'
+proxy_broker=$prefix-last-agent
+lifecycle_start "$proxy_broker"
+lifecycle_hold "$proxy_broker" "$image"
+start_proxy
+lifecycle_release "$proxy_broker"
+if [ "$(timeout 15 docker wait "$proxy")" = 0 ]; then
+    pass 'the proxy exits 0 within 15 seconds after the last agent leaves'
 else
-    fail 'the proxy stopped although brief sessions kept connecting'
-fi
-docker rm -f "$prefix-brief" >/dev/null
-if stopped_within 20; then
-    pass 'the proxy stops once brief sessions stop'
-else
-    fail 'the proxy kept running after brief sessions stopped'
+    fail 'the proxy did not exit cleanly after the last agent left'
 fi
 
-# A launch hold, touched by the host just before a launch, keeps an otherwise
-# idle proxy up until it expires.
-# shellcheck disable=SC2086
-start_proxy "$folder" $lifetime -e SANDBOX_PROXY_LAUNCH_HOLD=8
-docker exec "$proxy" touch /tmp/launch-hold
-sleep 5
-if [ "$(docker inspect -f '{{.State.Running}}' "$proxy")" = true ]; then
-    pass 'a launch hold keeps an idle proxy up'
+bare_proxy=$(docker run -d --label "$prefix" --network none --user 13:13 --read-only \
+    --cap-drop ALL --security-opt no-new-privileges "$image")
+if [ "$(timeout 15 docker wait "$bare_proxy")" = 1 ] &&
+    docker logs "$bare_proxy" 2>&1 | grep -Fq 'cannot reach the lifecycle broker'; then
+    pass 'without a broker the proxy reports the error and exits 1 within 15 seconds'
 else
-    fail 'the proxy stopped despite a fresh launch hold'
-fi
-if stopped_within 20; then
-    pass 'the proxy stops once the launch hold expires'
-else
-    fail 'the proxy kept running after the launch hold expired'
+    fail 'the proxy did not report an unreachable broker and exit 1'
 fi
 
 [ "$failures" -eq 0 ] || { echo "$failures check(s) failed." >&2; exit 1; }
