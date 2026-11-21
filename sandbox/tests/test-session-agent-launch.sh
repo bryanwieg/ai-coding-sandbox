@@ -87,6 +87,20 @@ for agent in claude codex; do
         fail "sandbox-start for $agent: $calls"
     fi
 done
+# AI_CODEX=off skips Codex's setup in a Claude session; Claude still launches.
+# shellcheck disable=SC2016
+calls=$(docker run --rm --network none --read-only --tmpfs /tmp:mode=1777 --user "$(id -u):$(id -g)" \
+    -v "$test_dir/record:/stubs/claude:ro" -v "$test_dir/record:/stubs/codex:ro" \
+    -v "$test_dir/record:/stubs/sandbox-check-context7:ro" \
+    -e PATH="/stubs:/usr/local/bin:/usr/bin:/bin" -e SANDBOX_AGENT=claude -e AI_CODEX=off \
+    -e CLAUDE_CONFIG_DIR=/tmp/claude -e CODEX_HOME=/tmp/codex \
+    --entrypoint sh "$image" -c 'sandbox-start --probe >/dev/null 2>&1; cat /tmp/calls; ls /tmp')
+if printf '%s\n' "$calls" | grep -Eq '^claude( .*)? --probe$' &&
+    printf '%s\n' "$calls" | grep -Fxq claude && ! printf '%s\n' "$calls" | grep -Fxq codex; then
+    pass 'AI_CODEX=off skips Codex setup in a Claude session'
+else
+    fail "sandbox-start for claude with AI_CODEX=off: $calls"
+fi
 # Through the entrypoint, both CLIs get the shared xdg folder in Claude's
 # state, also when the other agent runs them; an explicit XDG_CONFIG_HOME is
 # kept. Stub CLIs stand in for the real ones under /opt and print the folder.
