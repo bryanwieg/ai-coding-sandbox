@@ -405,6 +405,31 @@ else
     fail "drain with an open tunnel took ${elapsed_ms} ms (exit $proxy_exit)"
 fi
 
+proxy_broker=$prefix-detached
+lifecycle_start "$proxy_broker"
+lifecycle_hold "$proxy_broker" "$image"
+start_proxy
+# shellcheck disable=SC2016 # Record the PID from inside the new session.
+docker exec -d "$proxy" setsid sh -c 'trap "" TERM; echo $$ > /tmp/detached.pid; exec sleep 600'
+# shellcheck disable=SC2016
+docker exec "$proxy" timeout 10 sh -c '
+    until [ -s /tmp/detached.pid ] && pid=$(cat /tmp/detached.pid) &&
+        kill -0 "$pid" && pgrep -fx "sleep 600" | grep -Fxq "$pid"; do
+        sleep 0.1
+    done
+' || { echo 'The detached proxy process did not start.' >&2; exit 1; }
+
+drain_start_ms=$(date +%s%3N)
+lifecycle_drain "$proxy_broker" &
+drain_pid=$!
+proxy_exit=$(timeout 12 docker wait "$proxy") || proxy_exit="docker wait exited $?"
+elapsed_ms=$(( $(date +%s%3N) - drain_start_ms ))
+if wait "$drain_pid" && [ "$proxy_exit" = 0 ] && [ "$elapsed_ms" -le 12000 ]; then
+    pass "a detached process does not keep the proxy container alive (${elapsed_ms} ms)"
+else
+    fail "proxy drain with a detached process took ${elapsed_ms} ms (exit $proxy_exit)"
+fi
+
 proxy_broker=$prefix-last-agent
 lifecycle_start "$proxy_broker"
 lifecycle_hold "$proxy_broker" "$image"

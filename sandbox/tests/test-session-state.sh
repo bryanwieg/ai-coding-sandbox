@@ -239,6 +239,32 @@ else
     fail 'the session did not join as claude, become active and exit successfully'
 fi
 
+detached_broker=$prefix-detached
+lifecycle_start "$detached_broker"
+# shellcheck disable=SC2046,SC2016 # Expand the mount here and the script arguments in the container.
+detached_agent=$(entrypoint_bare --init -d $(lifecycle_mount "$detached_broker" agents) "$image" \
+    sh -c 'setsid sh -c "$1" & exec sleep 600' sh 'trap "" TERM; echo $$ > /tmp/detached.pid; exec sleep 601')
+# shellcheck disable=SC2016
+docker exec "$detached_agent" timeout 10 sh -c '
+    until [ -s /tmp/detached.pid ] && kill -0 "$(cat /tmp/detached.pid)"; do sleep 0.1; done
+' || { echo 'The detached agent process did not start.' >&2; exit 1; }
+# The entrypoint joins before running the command that wrote the PID.
+[ "$(lifecycle_field "$detached_broker" agents)" = claude ] || {
+    echo 'The detached-process session did not join its broker as claude.' >&2
+    exit 1
+}
+
+drain_start_ms=$(date +%s%3N)
+lifecycle_drain "$detached_broker" &
+drain_pid=$!
+agent_exit=$(timeout 17 docker wait "$detached_agent") || agent_exit="docker wait exited $?"
+elapsed_ms=$(( $(date +%s%3N) - drain_start_ms ))
+if wait "$drain_pid" && [ "$agent_exit" = 143 ] && [ "$elapsed_ms" -le 17000 ]; then
+    pass "a detached process does not keep the agent container alive (${elapsed_ms} ms)"
+else
+    fail "agent drain with a detached process took ${elapsed_ms} ms (exit $agent_exit)"
+fi
+
 bare_id=$(entrypoint_bare -d "$image" true)
 bare_exit=$(timeout 15 docker wait "$bare_id") || bare_exit="docker wait exited $?"
 docker logs "$bare_id" >/dev/null 2>"$broker_err"
