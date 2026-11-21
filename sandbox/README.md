@@ -424,6 +424,8 @@ of failing to start its own sandbox. Codex's system configuration,
 `/etc/codex/config.toml` from `codex/config.toml`, makes `danger-full-access`
 the default for plain `codex exec` as well; the user's
 `~/.codex/config.toml`, `-c` and `--sandbox` still override it.
+`AI_CODEX=off` in `.sandbox/agent.env` turns Codex off: Claude sessions skip
+its setup, and phased-delivery builds nothing with it.
 
 ## Egress policy
 
@@ -781,6 +783,13 @@ counterpart of Codex's automatic approval. The image also sets
 `DISABLE_AUTOUPDATER`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` and
 `ENABLE_CLAUDEAI_MCP_SERVERS=false`. Per-project plugins and settings belong in
 the project's own `.claude/settings.json`.
+
+When `settings.json` has no `statusLine`, `20-settings` also sets one that
+saves Claude's plan usage to `claude-usage.json` in the config folder (read by
+phased-delivery's `claude-usage.py`) and shows Ponytail's status line when
+Ponytail is installed. It replaces only the earlier hand-set capture command,
+which ran Ponytail's script unconditionally. Any other status line is kept and
+then captures no usage.
 
 ## Bundled plugins
 
