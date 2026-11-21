@@ -4,9 +4,9 @@
 # checkout with bin/install-shell-functions, then work from a project root:
 #
 #   sandbox-init [--reference PATH]   create .sandbox/ for this project
-#   sandbox [SERVICE [ARGS...]]       start a session (default: claude); at a
-#                                     Git repository's root without .sandbox/,
-#                                     runs sandbox-init and stages it first
+#   sandbox [SERVICE [ARGS...]]       start a session (default: claude); without
+#                                     .sandbox/, runs sandbox-init first and, at
+#                                     a Git repository's root, stages it
 #   sandbox codex                     ... or Codex
 #   sandbox claude bash               ... or a shell in a Claude session
 #   sandbox-trust                     review and approve the egress policy
@@ -24,9 +24,10 @@ sandbox() {
             cat <<'HELP'
 Usage: sandbox [SERVICE [ARGS...]]
 
-Run from the project root. The default service is claude. At the root of a
-Git repository without .sandbox/env, sandbox runs sandbox-init first and stages
-the new .sandbox/ folder (env and agent.env stay ignored).
+Run from the project root. The default service is claude. Without
+.sandbox/env, sandbox runs sandbox-init first, at a Git repository's root or in
+a folder outside any repository, such as one holding several. At a repository's
+root it stages the new .sandbox/ folder (env and agent.env stay ignored).
 
 Commands:
   sandbox                         Approve egress, unlock SSH if enabled, start Claude
@@ -61,14 +62,19 @@ HELP
             ;;
     esac
     if [ ! -f .sandbox/env ]; then
-        # At the root of a Git work tree, create the configuration and stage
-        # it; .sandbox/.gitignore keeps env and agent.env out of the index.
-        if [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" != true ] ||
-            [ -n "$(git rev-parse --show-prefix 2>/dev/null)" ]; then
+        # Create the configuration at the root of a Git work tree, and stage
+        # it there (.sandbox/.gitignore keeps env and agent.env out of the
+        # index), or in a folder outside any work tree, such as one holding
+        # several repositories. A subfolder of a repository is ambiguous, and
+        # the home and root folders would expose too much, so those stop.
+        local sandbox_git
+        sandbox_git=$(git rev-parse --is-inside-work-tree 2>/dev/null) || sandbox_git=false
+        if { [ "$sandbox_git" = true ] && [ -n "$(git rev-parse --show-prefix 2>/dev/null)" ]; } ||
+            [ "$PWD" = / ] || [ "$PWD" = "${HOME%/}" ]; then
             echo 'sandbox: no .sandbox/env here; start from the project root, or run sandbox-init first.' >&2
             return 1
         fi
-        echo 'sandbox: no .sandbox/env in this repository; creating it with sandbox-init.' >&2
+        echo 'sandbox: no .sandbox/env in this folder; creating it with sandbox-init.' >&2
         # Default settings, no reference folder; sandbox's arguments are for
         # the service.
         # shellcheck disable=SC2119
@@ -77,8 +83,14 @@ HELP
             echo 'sandbox: sandbox-init did not create .sandbox/env.' >&2
             return 1
         fi
-        git add -- .sandbox || return
-        echo 'sandbox: staged .sandbox/ in Git; commit it to share the egress policy and SSH settings.' >&2
+        if [ "$sandbox_git" != true ]; then
+            :
+        elif git check-ignore -q .sandbox; then
+            echo 'sandbox: .sandbox/ is ignored by Git here; not staging it.' >&2
+        else
+            git add -- .sandbox || return
+            echo 'sandbox: staged .sandbox/ in Git; commit it to share the egress policy and SSH settings.' >&2
+        fi
     fi
     if [ "$#" -eq 0 ]; then
         set -- claude
