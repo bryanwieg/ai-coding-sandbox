@@ -149,6 +149,9 @@ Work:
      `PATH` to return at once, not by adding a variable);
    - a poll that sees `joinable=yes` again returns without forcing
      anything;
+   - two consecutive short sessions: the second launch, started while the
+     first group is `idle`, waits for it to stop and then runs (stubbed
+     `status` answers `state=idle`, `joinable=no`);
    - a claude or codex launch runs the `pull --quiet --policy missing
      --include-deps --ignore-buildable` and `build --quiet
      --with-dependencies` commands for its service, in that order, before
@@ -324,7 +327,7 @@ Work:
    - images (~852-864): list `session-lifecycle`; the entrypoint joins the
      broker in sessions instead of starting leases; service images run their
      script under `sandbox-lifecycle run`;
-   - image table (~885-890): add `Lifecycle broker | lifecycle-<release ID> |
+   - image table (~885-890): add `Lifecycle broker | lifecycle-<image version> |
      lifecycle-latest`.
 3. `session-guide.md`: add the `lifecycle` service to the list of session
    services (~24-36) and a row for the `lifecycle` volume to the volume

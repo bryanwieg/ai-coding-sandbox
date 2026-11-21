@@ -52,7 +52,7 @@ exported in the shell (it overrides the env file); never edit or commit
   broker from 02.3 on. `test-session-agent-launch.sh` and
   `test-session-exit.sh` override the entrypoint, and the CI smoke tests run
   without `SANDBOX_SESSION`. (Corrected after plan review round 1.)
-- Open: a fresh named volume is populated from the `scratch` image's
+- Verified (02.3, 2026-11-21: test-session-state asserts the mounted `agents` folder is 13:13, passing): a fresh named volume is populated from the `scratch` image's
   `/run/sandbox-lifecycle` directories, keeping owner 13:13, when the broker
   is the first container to mount it. Check in 02.3 when the test helper
   first starts a broker (`ls -lnd` of the mounted folder). If it is wrong,
@@ -108,7 +108,7 @@ Contracts:
   `session-proxy` and `base`: `COPY --from=lifecycle-build --chmod=0755
   /out/sandbox-lifecycle /usr/local/bin/sandbox-lifecycle`. Entrypoints do
   not change in this stage.
-- Release image name `lifecycle` (tags `lifecycle-<release ID>`,
+- Release image name `lifecycle` (tags `lifecycle-<image version>`,
   `lifecycle-latest`); `pin-session-images` accepts `lifecycle=DIGEST`.
 
 Files:
@@ -480,3 +480,21 @@ If any of 1-3 fails, revise 01.3 (the wrapper's agent role) before phase 03.
   a writable agent mount), the pin and audit-session tests, the daemon and
   forwarder tests, `audit-sandbox --no-docker` and the full audit; rendered
   grace periods 25s/15s/15s/none.
+- 2026-11-21 (02.3): test-session-state, -init, -agent-launch, -exit and
+  check-sandbox pass. Dev session (project `ai-coding-sandbox-lifecycle`,
+  a detached `claude sleep 300` in place of an open TUI): status showed
+  `state=active`; `echo hi | … run --rm -T claude sh -c cat` printed `hi`;
+  `exit 5` passed through as 5; SIGKILL to the wrapper (tini's child, pid 7)
+  ended the container with 137. `compose down` left the two detached run
+  containers running (known); removed by hand. The interactive TUI
+  inspection is left for the user.
+- 2026-11-21 (phase review, Codex gpt-6.2-astra high): accepted interim
+  gap: until 04.1's host group wait, a launch right after the last session
+  can meet a broker that is about to drain; the phases ship in one pull
+  request, so no release carries it. 04.1 covers two consecutive short
+  sessions. The interactive terminal checks (TUI, Ctrl-Z/jobs/fg, branch
+  hook on normal exit) remain for the user. Fixes: shell fallback for
+  shebang-less commands (01.3), a `SANDBOX_SESSION=1` normal-exit case in
+  test-session-exit, check-sandbox checks the per-project volume name and
+  `required` broker dependencies (02.2), helper guard removed (02.3); tag
+  naming corrected to `lifecycle-<image version>`.
