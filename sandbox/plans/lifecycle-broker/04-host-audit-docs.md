@@ -80,10 +80,11 @@ Contracts:
 - `_sandbox_wait_for_group`: runs the `status` command above; if it fails,
   or prints `joinable=yes`, return 0. Otherwise print once `sandbox: waiting
   for this project's previous session group to stop, so this launch starts
-  with the current settings.` and poll every second
-  `docker compose --env-file .sandbox/env ps -q --status running lifecycle
-  egress-proxy docker publish ssh-agent` until it prints nothing (return
-  0), for at most 40 s. At the bound, force the end (design "Forced end",
+  with the current settings.` and poll `docker compose --env-file
+  .sandbox/env ps -q --status running lifecycle egress-proxy docker publish
+  ssh-agent` until it prints nothing (return 0): at most 40 polls with
+  `sleep 1` between them (count polls; do not read the clock, so a stubbed
+  `sleep` ends the loop). At the bound, force the end (design "Forced end",
   layer 5): print `sandbox: forcing the previous session group's stuck
   containers to stop: NAMES` (service names from `ps --format
   '{{.Service}}'`), `docker rm -f` each listed container, and return 0 when
@@ -102,10 +103,14 @@ Contracts:
   after a passphrase prompt left open past the broker's 120 s startup
   window).
 - `_sandbox_prepare_images SERVICE`: the `pull` and `build` commands of
-  design.md "Host", in that order, each `|| return`. Called in the
-  `claude|codex)` branch after `_sandbox_update_proxy` and before
-  `ssh-unlock` (for every launch, with or without the ssh profile), so the
-  broker's startup window never covers an image download or build.
+  design.md "Host", in that order. Capture each command's combined output;
+  on success print nothing (Compose prints "Skipped … already present" and
+  "No services to build" on stderr even then), on failure print the
+  captured output and return its status. Called first in the
+  `claude|codex)` branch, before the first `_sandbox_wait_for_group` (for
+  every launch, with or without the ssh profile). The branch order is then:
+  prepare images, wait, `trust --yes`, `_sandbox_update_proxy`,
+  `ssh-unlock`, wait, run.
 - `sandbox-unlock`'s help line: "Unlock SSH keys for this project's running
   session group, or for one started within two minutes".
 - Launch label `ai-coding-sandbox.client=<$$.<epoch>.<RANDOM>>`, watcher
@@ -147,7 +152,10 @@ Work:
    - a claude or codex launch runs the `pull --quiet --policy missing
      --include-deps --ignore-buildable` and `build --quiet
      --with-dependencies` commands for its service, in that order, before
-     `ssh-unlock` and before `run`; other services do not;
+     the first `status` call, `ssh-unlock` and `run`; other services do not;
+   - when the stubbed `pull` and `build` succeed while writing to stderr, the
+     launch prints none of it; when `pull` fails, its output is printed and
+     the launch stops with its status;
    - with the ssh profile, a second wait that waited runs `ssh-unlock
      --if-needed` a second time; one that did not wait does not;
    - claude and codex launches carry the label, other services do not;
@@ -302,7 +310,11 @@ Work:
      settings apply, that a broker update or restart keeps running sessions
      (they reconnect), `sandbox-stop`, `sandbox-status`,
      orphan handling and its limit (plain `docker compose run` sessions are
-     not protected), and troubleshooting (a group that will not stop:
+     not protected), the two launch limits from design.md "Host" with their
+     remedy, run `sandbox` again (a passphrase prompt left open past two
+     minutes stops the launch; a launch into a running group can fail if
+     that group's other sessions all quit while Compose recreates a changed
+     service), and troubleshooting (a group that will not stop:
      `sandbox-stop`; `docker compose logs lifecycle`);
    - daemon (~524-545), forwarder (~574) and ssh-agent (~608): replace idle,
      lease and expiry text with "ends with the session group"; ssh keys end
@@ -357,3 +369,7 @@ Model basis: J1 F1 R2 C0 K0 P1 V2 S0 = 7 -> middle, override 3 (V = 2, R =
   before `ssh-unlock` starts the group, so a long pull or build after a
   release cannot use up the broker's startup window; a passphrase prompt
   left open past 120 s is an accepted limit (design.md "Host").
+- 2026-11-21 (plan review round 4): image prep moved first in the launch so
+  a slow pull cannot land `ssh-unlock` in a group that began stopping; its
+  output is shown only on failure; the group wait counts polls so stubbed
+  `sleep` tests terminate; the README names both launch limits.

@@ -220,8 +220,10 @@ reloads; squid's `shutdown_lifetime` fits inside its grace.
   force-removes those still running (Forced end, layer 5). If the second
   wait waited and the project uses SSH, unlock again: the old group's keys
   are gone.
-- Before `ssh-unlock` starts the group, make every image the launch needs
-  present: `docker compose --env-file .sandbox/env pull --quiet --policy
+- First in a launch, before the group wait and before anything starts a
+  container, make every image the launch needs present (it touches no
+  containers, so a slow pull cannot land the unlock in a group that started
+  stopping meanwhile; output is shown only on failure): `docker compose --env-file .sandbox/env pull --quiet --policy
   missing --include-deps --ignore-buildable SERVICE`, then `docker compose
   --env-file .sandbox/env build --quiet --with-dependencies SERVICE` (a
   no-op without `build:` sections). Slow pulls and builds then happen before
