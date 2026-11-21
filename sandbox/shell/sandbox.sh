@@ -20,8 +20,8 @@
 # Variables set in the shell override .sandbox/env for one launch, for
 # example: SANDBOX_PUBLISH_PORTS=3000 sandbox
 
-# Where this copy is and what it held when this shell loaded it, so an agent
-# launch can tell whether the installed copy has changed since.
+# Where this copy is, so an agent launch can update it. What it held is
+# recorded at the end of the file, so only a complete load counts.
 if [ -n "${ZSH_VERSION:-}" ]; then
     eval '_sandbox_functions_file=${(%):-%x}'
 else
@@ -31,7 +31,6 @@ case "$_sandbox_functions_file" in
     /*) ;;
     *) _sandbox_functions_file=$PWD/$_sandbox_functions_file ;;
 esac
-_sandbox_functions_loaded=$(cksum < "$_sandbox_functions_file" 2>/dev/null) || _sandbox_functions_loaded=
 
 sandbox() {
     case "${1:-}" in
@@ -438,3 +437,7 @@ EOF
     fi
     return 0
 }
+
+# Keep last: a load that fails part-way leaves the previous record, so the
+# next agent launch tries to load the installed copy again.
+_sandbox_functions_loaded=$(cksum < "$_sandbox_functions_file" 2>/dev/null) || _sandbox_functions_loaded=
