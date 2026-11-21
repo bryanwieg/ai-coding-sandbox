@@ -47,10 +47,17 @@ if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
     set -- --host=unix:///run/docker.sock "$@"
 fi
 
+# The shell defers a trapped signal until the foreground wipe finishes.
+stopping=false
+trap 'stopping=true' TERM INT
 wipe
+if "$stopping"; then exit 0; fi
+
 dockerd-entrypoint.sh "$@" &
 daemon=$!
 trap 'kill -TERM "$daemon" 2>/dev/null || :' TERM INT
+# Forward a stop that arrived between the check and installing the new trap.
+if "$stopping"; then kill -TERM "$daemon" 2>/dev/null || :; fi
 
 # A trapped signal interrupts wait; collect the daemon's status before wiping.
 while :; do

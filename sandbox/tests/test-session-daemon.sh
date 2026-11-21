@@ -192,6 +192,41 @@ else
     fail 'expected an unreachable broker error and exit 1'
 fi
 
+# Hold rm after its first deletion so even a fast volume is mid-wipe at drain.
+name=$prefix-startup-wipe
+startup_broker=$name-broker
+wipe_test=$test_dir/startup-wipe
+mkdir -m 0755 "$wipe_test"
+cat > "$wipe_test/rm" <<'EOF'
+#!/bin/sh
+set -eu
+/bin/rm -f "$2/first"
+while [ ! -e /wipe-test/resume ]; do sleep 0.05; done
+exec /bin/rm "$@"
+EOF
+printf '#!/bin/sh\necho daemon-entrypoint-started\nexit 99\n' > "$wipe_test/dockerd-entrypoint.sh"
+chmod 755 "$wipe_test/rm" "$wipe_test/dockerd-entrypoint.sh"
+docker volume create --label "$prefix" "$name-data" >/dev/null
+docker run --rm -v "$name-data:/home/rootless/.local/share/docker" --entrypoint sh "$image" -ec '
+    mkdir "$XDG_DATA_HOME/docker"
+    cd "$XDG_DATA_HOME/docker"
+    touch first
+    seq 1 8192 | xargs touch
+'
+lifecycle_start "$startup_broker"
+broker=$startup_broker start_daemon "$name" 1000 1000 -v "$wipe_test:/wipe-test:ro" \
+    -e PATH=/wipe-test:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+docker exec "$name" timeout 10 sh -c 'while [ -e "$XDG_DATA_HOME/docker/first" ]; do sleep 0.05; done'
+docker exec "$startup_broker" /usr/local/bin/sandbox-lifecycle stop
+touch "$wipe_test/resume"
+if [ "$(timeout 30 docker wait "$name")" = 0 ] &&
+    ! docker logs "$name" 2>&1 | grep -Fxq daemon-entrypoint-started &&
+    docker run --rm -v "$name-data:/data:ro" --entrypoint sh "$image" -c 'test ! -e /data/docker'; then
+    pass 'a drain during the startup wipe finishes it and exits 0 without starting the daemon'
+else
+    fail 'the startup wipe was incomplete, the daemon started, or the drain failed'
+fi
+
 name=$prefix-wipe
 drain_broker=$prefix-wipe-broker
 lifecycle_start "$drain_broker"
