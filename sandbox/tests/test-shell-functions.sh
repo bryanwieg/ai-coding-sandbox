@@ -4,7 +4,7 @@
 # pass the right docker commands, in bash and, when installed, zsh; and a
 # running proxy, at launch or after sandbox-trust, is reloaded only when its
 # policy differs from the approved one, and restarted when it cannot reload;
-# and a launch holds the running proxy and, with Docker, the daemon up; and
+# and launches wait for stopping groups and clean up orphaned sessions;
 # an agent session ends by removing only the released images nothing uses;
 # and at a Git repository's root without .sandbox/env, sandbox initializes
 # and stages it before launching, but nowhere else.
@@ -34,18 +34,40 @@ grep -Fq 'unsupported shell' "$test_dir/err"
 mkdir -p "$test_dir/bin" "$test_dir/project/.sandbox" "$test_dir/empty"
 cat > "$test_dir/bin/docker" <<'STUB'
 #!/bin/sh
+log=$SANDBOX_TEST_LOG
+printf '%s\n' "$*" >> "$log"
 case "$*" in
+    *' pull --quiet --policy missing --include-deps --ignore-buildable '*|*' build --quiet --with-dependencies '*)
+        echo "preparing image on stdout"
+        echo "preparing image on stderr" >&2
+        [ "${SANDBOX_TEST_FAIL:-}" != "$4" ] || exit 50
+        exit 0
+        ;;
+    *' exec -T lifecycle sandbox-lifecycle status')
+        # One scripted state per status call, then the default state.
+        state=$(sed -n "$(grep -Fxc "$*" "$log")p" "$SANDBOX_TEST_STATES")
+        case "${state:-${SANDBOX_TEST_STATE:-absent}}" in
+            active) printf 'state=active\njoinable=yes\nremaining=0\nagents=claude\nservices=docker\n' ;;
+            idle) printf 'state=idle\njoinable=no\nremaining=2\nagents=\nservices=docker\n' ;;
+            absent) exit 1 ;;
+        esac
+        exit 0
+        ;;
+    *' exec -T lifecycle sandbox-lifecycle stop') [ "${SANDBOX_TEST_STATE:-absent}" != absent ]; exit $? ;;
+    *' ps -q --status running lifecycle egress-proxy docker publish ssh-agent')
+        if [ "$(grep -Fxc "$*" "$log")" -le "${SANDBOX_TEST_RUNNING:-0}" ]; then printf 'c1\nc2\n'; fi
+        exit 0
+        ;;
+    *" ps --format {{.Service}} --status running lifecycle egress-proxy docker publish ssh-agent")
+        printf 'lifecycle\ndocker\n'; exit 0 ;;
+    *' --profile * ps -a -q') printf 'one-off\nexited\n'; exit 0 ;;
+    *' --profile * down --remove-orphans') [ "${SANDBOX_TEST_FAIL:-}" != down ]; exit $? ;;
+    'ps -aq --filter label=ai-coding-sandbox.client='*) printf '%s\n' "${SANDBOX_TEST_LEFT:-}"; exit 0 ;;
+    'stop -t 15 '*|'rm -f '*) [ "${SANDBOX_TEST_FAIL:-}" != remove ]; exit $? ;;
     'compose --env-file .sandbox/env config --services')
         [ "${SANDBOX_TEST_FAIL:-}" != config ] || exit 41
         printf 'claude\ncodex\n'
         [ "${SANDBOX_TEST_SSH:-}" != 1 ] || printf 'ssh-agent\nssh-unlock\n'
-        [ "${SANDBOX_TEST_DOCKER:-}" != 1 ] || printf 'docker\n'
-        exit 0
-        ;;
-    'compose --env-file .sandbox/env exec -T '*' touch /tmp/launch-hold')
-        # Holds go to a log; a stopped service (SANDBOX_TEST_FAIL=hold) fails.
-        printf '%s\n' "$6" >> "$SANDBOX_TEST_HOLDS"
-        [ "${SANDBOX_TEST_FAIL:-}" != hold ] || exit 47
         exit 0
         ;;
     'compose --env-file .sandbox/env exec -T egress-proxy sandbox-proxy-config --reload')
@@ -98,15 +120,35 @@ esac
 if [ "${SANDBOX_TEST_HERDR:-}" = 1 ] && [ "${HERDR_AGENT+x}" = x ]; then
     printf 'HERDR_AGENT=%s\n' "$HERDR_AGENT"
 fi
-for argument in "$@"; do printf '%s\n' "$argument"; done
+for argument in "$@"; do
+    case "$argument" in
+        ai-coding-sandbox.client=*)
+            [ -f "$TMPDIR/ai-coding-sandbox-watch.${argument#*=}" ] || exit 51
+            argument=ai-coding-sandbox.client=ID
+            ;;
+    esac
+    printf '%s\n' "$argument"
+done
 case "$*" in
     *' trust --yes'|*' --rm trust') [ "${SANDBOX_TEST_FAIL:-}" != trust ] || exit 42 ;;
     *' ssh-unlock --if-needed') [ "${SANDBOX_TEST_FAIL:-}" != unlock ] || exit 43 ;;
     *' restart egress-proxy') [ "${SANDBOX_TEST_FAIL:-}" != restart ] || exit 45 ;;
-    *' --rm claude') [ "${SANDBOX_TEST_FAIL:-}" != launch ] || exit 48 ;;
+    *' --rm --label '*' claude') [ "${SANDBOX_TEST_FAIL:-}" != launch ] || exit 48 ;;
 esac
 STUB
-chmod 0755 "$test_dir/bin/docker"
+# Skip the one-second group poll delay. Keep the detached watcher's own delay.
+cat > "$test_dir/bin/sleep" <<'STUB'
+#!/bin/sh
+[ "$1" = 1 ] || exec "$SANDBOX_TEST_SLEEP" "$@"
+echo sleep >> "$SANDBOX_TEST_LOG"
+STUB
+SANDBOX_TEST_SLEEP=$(command -v sleep)
+log=$test_dir/commands
+states=$test_dir/states
+mkdir "$test_dir/tmp"
+export SANDBOX_TEST_SLEEP SANDBOX_TEST_LOG="$log" SANDBOX_TEST_STATES="$states" TMPDIR="$test_dir/tmp"
+: > "$states"
+chmod 0755 "$test_dir/bin/docker" "$test_dir/bin/sleep"
 : > "$test_dir/project/.sandbox/env"
 
 for shell in bash zsh; do
@@ -125,38 +167,165 @@ for shell in bash zsh; do
     done
     if run "$test_dir/empty" sandbox 2>"$test_dir/err"; then exit 1; fi
     grep -Fq 'no .sandbox/env here' "$test_dir/err"
-    holds=$test_dir/holds
-    export SANDBOX_TEST_HOLDS="$holds"
-    : > "$holds"
-    run "$test_dir/project" 'sandbox claude bash' >/dev/null
-    [ "$(tr '\n' ' ' < "$holds")" = 'egress-proxy ' ]
-    : > "$holds"
-    run "$test_dir/project" 'SANDBOX_TEST_DOCKER=1 sandbox' >/dev/null
-    [ "$(tr '\n' ' ' < "$holds")" = 'egress-proxy docker ' ]
-    : > "$holds"
-    run "$test_dir/project" 'SANDBOX_TEST_DOCKER=1 SANDBOX_TEST_FAIL=hold sandbox' | grep -Fxq claude
-    : > "$holds"
-    run "$test_dir/project" 'sandbox trust' >/dev/null
-    [ ! -s "$holds" ]
     trust='compose --env-file .sandbox/env run --rm -T trust --yes '
     unlock='compose --env-file .sandbox/env run --rm ssh-unlock --if-needed '
     launch='compose --env-file .sandbox/env run --rm '
+    agent='--label ai-coding-sandbox.client=ID '
     reload='compose --env-file .sandbox/env exec -T egress-proxy sandbox-proxy-config --reload '
     restart='compose --env-file .sandbox/env restart egress-proxy '
-    [ "$(run "$test_dir/project" sandbox | tr '\n' ' ')" = "${trust}${launch}claude " ]
-    [ "$(run "$test_dir/project" 'sandbox claude bash' | tr '\n' ' ')" = "${trust}${launch}claude bash " ]
-    [ "$(run "$test_dir/project" 'sandbox codex --help' | tr '\n' ' ')" = "${trust}${launch}codex --help " ]
-    [ "$(run "$test_dir/project" 'unset HERDR_AGENT; SANDBOX_TEST_HERDR=1 sandbox' | tr '\n' ' ')" = "${trust}HERDR_AGENT=claude ${launch}claude " ]
-    [ "$(run "$test_dir/project" 'unset HERDR_AGENT; SANDBOX_TEST_HERDR=1 sandbox codex' | tr '\n' ' ')" = "${trust}HERDR_AGENT=codex ${launch}codex " ]
-    [ "$(run "$test_dir/project" 'HERDR_AGENT=claude SANDBOX_TEST_HERDR=1 sandbox codex' | tr '\n' ' ')" = "HERDR_AGENT=claude ${trust}HERDR_AGENT=claude ${launch}codex " ]
-    [ "$(run "$test_dir/project" 'unset HERDR_AGENT; SANDBOX_TEST_HERDR=1 sandbox claude bash' | tr '\n' ' ')" = "${trust}${launch}claude bash " ]
-    [ "$(run "$test_dir/project" 'SANDBOX_TEST_SSH=1 sandbox codex' | tr '\n' ' ')" = "${trust}${unlock}${launch}codex " ]
-    [ "$(run "$test_dir/project" 'SANDBOX_TEST_APPLIED=abc SANDBOX_TEST_WANTED=abc sandbox' | tr '\n' ' ')" = "${trust}${launch}claude " ]
-    [ "$(run "$test_dir/project" 'SANDBOX_TEST_APPLIED= SANDBOX_TEST_WANTED= sandbox' | tr '\n' ' ')" = "${trust}${launch}claude " ]
-    [ "$(run "$test_dir/project" 'SANDBOX_TEST_APPLIED=old SANDBOX_TEST_WANTED=new sandbox codex' 2>"$test_dir/err" | tr '\n' ' ')" = "${trust}${reload}${launch}codex " ]
+    compose='compose --env-file .sandbox/env'
+    status="$compose exec -T lifecycle sandbox-lifecycle status"
+    stop="$compose exec -T lifecycle sandbox-lifecycle stop"
+    poll="$compose ps -q --status running lifecycle egress-proxy docker publish ssh-agent"
+    all="$compose --profile *"
+    waiting="sandbox: waiting for this project's previous session group to stop, so this launch starts with the current settings."
+    forcing="sandbox: forcing the previous session group's stuck containers to stop: lifecycle docker"
+
+    # A launch prepares images silently, checks the group on both sides of
+    # trust/unlock, and cleans up by the same label before pruning.
+    for service in claude codex; do
+        : > "$log"
+        run "$test_dir/project" "SANDBOX_TEST_SSH=1 SANDBOX_TEST_STATE=active sandbox $service" > "$test_dir/output" 2>"$test_dir/err"
+        [ ! -s "$test_dir/err" ]
+        if grep -Fq 'preparing image' "$test_dir/output"; then exit 1; fi
+        client=$(sed -n "s/^.* run --rm --label ai-coding-sandbox.client=\([0-9.]*\) $service\$/\1/p" "$log")
+        printf '%s\n' "$client" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+        diff - "$log" <<EOF
+$compose pull --quiet --policy missing --include-deps --ignore-buildable $service
+$compose build --quiet --with-dependencies $service
+$status
+$compose config --services
+${trust% }
+$compose exec -T egress-proxy sh -c cat /tmp/applied-policy 2>/dev/null || echo unknown
+${unlock% }
+$status
+${launch}--label ai-coding-sandbox.client=$client $service
+ps -aq --filter label=ai-coding-sandbox.client=$client
+$compose config --images
+EOF
+    done
+    : > "$log"
+    run "$test_dir/project" 'sandbox trust' >/dev/null
+    [ "$(cat "$log")" = "${launch}trust" ]
+
+    for failure in pull build; do
+        : > "$log"
+        result=0
+        run "$test_dir/project" "SANDBOX_TEST_FAIL=$failure sandbox" > "$test_dir/output" 2>"$test_dir/err" || result=$?
+        [ "$result" = 50 ]
+        [ ! -s "$test_dir/output" ]
+        grep -Fxq 'preparing image on stdout' "$test_dir/err"
+        grep -Fxq 'preparing image on stderr' "$test_dir/err"
+        [ "$(tail -n 1 "$log" | cut -d ' ' -f 4)" = "$failure" ]
+    done
+
+    # With no broker neither wait polls. The second short session sees
+    # the first group's idle state and launches once its containers exit.
+    : > "$log"
+    printf '%s\n' absent absent idle idle > "$states"
+    run "$test_dir/project" 'SANDBOX_TEST_RUNNING=1; export SANDBOX_TEST_RUNNING; sandbox claude && sandbox codex' > "$test_dir/output" 2>"$test_dir/err"
+    [ "$(cat "$test_dir/err")" = "$waiting" ]
+    grep -Fxq claude "$test_dir/output"
+    grep -Fxq codex "$test_dir/output"
+    [ "$(grep -Fxc "$poll" "$log")" = 2 ]
+    [ "$(grep -Fxc sleep "$log")" = 1 ]
+    [ "$(grep -nF "$poll" "$log" | head -n 1 | cut -d: -f1)" -gt "$(grep -n ' run --rm --label .* claude$' "$log" | cut -d: -f1)" ]
+
+    # A wait during SSH preparation unlocks again in the new group.
+    : > "$log"
+    printf '%s\n' active idle > "$states"
+    run "$test_dir/project" 'SANDBOX_TEST_SSH=1 sandbox' >/dev/null 2>"$test_dir/err"
+    [ "$(cat "$test_dir/err")" = "$waiting" ]
+    [ "$(grep -Fxc "${unlock% }" "$log")" = 2 ]
+    [ "$(grep -A1 -Fx "$poll" "$log")" = "$poll
+${unlock% }" ]
+
+    # Another launch can make the group joinable while this one waits.
+    : > "$log"
+    printf '%s\n' idle active active > "$states"
+    run "$test_dir/project" 'SANDBOX_TEST_RUNNING=40 sandbox' >/dev/null 2>"$test_dir/err"
+    [ "$(cat "$test_dir/err")" = "$waiting" ]
+    [ "$(grep -Fxc "$poll" "$log")" = 1 ]
+    if grep -Eq '^(sleep|rm -f )' "$log"; then exit 1; fi
+
+    # Bound the wait even when the broker disappears before its services.
+    for failure in none remove; do
+        : > "$log"
+        printf '%s\n' idle > "$states"
+        result=0
+        run "$test_dir/project" "SANDBOX_TEST_RUNNING=40 SANDBOX_TEST_FAIL=$failure sandbox" > "$test_dir/output" 2>"$test_dir/err" || result=$?
+        [ "$(cat "$test_dir/err")" = "$waiting
+$forcing" ]
+        [ "$(grep -Fxc "$poll" "$log")" = 40 ]
+        [ "$(grep -Fxc sleep "$log")" = 39 ]
+        [ "$(grep '^rm -f ' "$log")" = 'rm -f c1
+rm -f c2' ]
+        if [ "$failure" = none ]; then
+            [ "$result" = 0 ]
+            grep -Fxq claude "$test_dir/output"
+        else
+            [ "$result" = 1 ]
+            [ ! -s "$test_dir/output" ]
+        fi
+    done
+    : > "$states"
+
+    : > "$log"
+    run "$test_dir/project" 'SANDBOX_TEST_LEFT=c9 sandbox' >/dev/null 2>"$test_dir/err"
+    grep -Fq 'client left behind' "$test_dir/err"
+    [ "$(tail -n 3 "$log")" = "stop -t 15 c9
+rm -f c9
+$compose config --images" ]
+    [ -z "$(ls -A "$TMPDIR")" ]
+
+    # The watcher outlives its shell and cleans up even when the shell
+    # never reaches the usual end-of-launch cleanup.
+    : > "$log"
+    run "$test_dir/project" 'export SANDBOX_TEST_LEFT=c7; _sandbox_watch orphan'
+    for _ in $(seq 50); do
+        [ -e "$TMPDIR/ai-coding-sandbox-watch.orphan" ] || break
+        sleep 0.1
+    done
+    [ ! -e "$TMPDIR/ai-coding-sandbox-watch.orphan" ]
+    [ "$(cat "$log")" = 'ps -aq --filter label=ai-coding-sandbox.client=orphan
+stop -t 15 c7
+rm -f c7' ]
+
+    for state in active absent; do
+        : > "$log"
+        run "$test_dir/project" "SANDBOX_TEST_RUNNING=1 SANDBOX_TEST_STATE=$state sandbox-stop"
+        {
+            echo "$stop"
+            if [ "$state" = active ]; then printf '%s\n' "$poll" sleep "$poll"; fi
+            printf '%s\n' "$all ps -a -q" 'rm -f one-off' 'rm -f exited' "$all down --remove-orphans"
+        } > "$test_dir/expected"
+        diff "$test_dir/expected" "$log"
+    done
+    if run "$test_dir/project" 'SANDBOX_TEST_FAIL=down sandbox-stop'; then exit 1; fi
+    for command in sandbox-status sandbox-stop; do
+        if run "$test_dir/empty" "$command" 2>"$test_dir/err"; then exit 1; fi
+        grep -Fq "$command: no .sandbox/env here" "$test_dir/err"
+    done
+    [ "$(run "$test_dir/project" sandbox-status)" = 'sandbox-status: no session group is running for this project.' ]
+    [ "$(run "$test_dir/project" 'SANDBOX_TEST_STATE=active sandbox-status')" = 'state=active
+joinable=yes
+remaining=0
+agents=claude
+services=docker' ]
+    [ "$(run "$test_dir/project" sandbox | tr '\n' ' ')" = "${trust}${launch}${agent}claude " ]
+    [ "$(run "$test_dir/project" 'sandbox claude bash' | tr '\n' ' ')" = "${trust}${launch}${agent}claude bash " ]
+    [ "$(run "$test_dir/project" 'sandbox codex --help' | tr '\n' ' ')" = "${trust}${launch}${agent}codex --help " ]
+    [ "$(run "$test_dir/project" 'unset HERDR_AGENT; SANDBOX_TEST_HERDR=1 sandbox' | tr '\n' ' ')" = "${trust}HERDR_AGENT=claude ${launch}${agent}claude " ]
+    [ "$(run "$test_dir/project" 'unset HERDR_AGENT; SANDBOX_TEST_HERDR=1 sandbox codex' | tr '\n' ' ')" = "${trust}HERDR_AGENT=codex ${launch}${agent}codex " ]
+    [ "$(run "$test_dir/project" 'HERDR_AGENT=claude SANDBOX_TEST_HERDR=1 sandbox codex' | tr '\n' ' ')" = "HERDR_AGENT=claude ${trust}HERDR_AGENT=claude ${launch}${agent}codex " ]
+    [ "$(run "$test_dir/project" 'unset HERDR_AGENT; SANDBOX_TEST_HERDR=1 sandbox claude bash' | tr '\n' ' ')" = "${trust}${launch}${agent}claude bash " ]
+    [ "$(run "$test_dir/project" 'SANDBOX_TEST_SSH=1 sandbox codex' | tr '\n' ' ')" = "${trust}${unlock}${launch}${agent}codex " ]
+    [ "$(run "$test_dir/project" 'SANDBOX_TEST_APPLIED=abc SANDBOX_TEST_WANTED=abc sandbox' | tr '\n' ' ')" = "${trust}${launch}${agent}claude " ]
+    [ "$(run "$test_dir/project" 'SANDBOX_TEST_APPLIED= SANDBOX_TEST_WANTED= sandbox' | tr '\n' ' ')" = "${trust}${launch}${agent}claude " ]
+    [ "$(run "$test_dir/project" 'SANDBOX_TEST_APPLIED=old SANDBOX_TEST_WANTED=new sandbox codex' 2>"$test_dir/err" | tr '\n' ' ')" = "${trust}${reload}${launch}${agent}codex " ]
     grep -Fq 'reloading the running egress proxy' "$test_dir/err"
-    [ "$(run "$test_dir/project" 'SANDBOX_TEST_APPLIED=unknown SANDBOX_TEST_WANTED= sandbox' 2>/dev/null | tr '\n' ' ')" = "${trust}${reload}${launch}claude " ]
-    [ "$(run "$test_dir/project" 'SANDBOX_TEST_APPLIED=old SANDBOX_TEST_WANTED=new SANDBOX_TEST_FAIL=reload sandbox' 2>"$test_dir/err" | tr '\n' ' ')" = "${trust}${reload}${restart}${launch}claude " ]
+    [ "$(run "$test_dir/project" 'SANDBOX_TEST_APPLIED=unknown SANDBOX_TEST_WANTED= sandbox' 2>/dev/null | tr '\n' ' ')" = "${trust}${reload}${launch}${agent}claude " ]
+    [ "$(run "$test_dir/project" 'SANDBOX_TEST_APPLIED=old SANDBOX_TEST_WANTED=new SANDBOX_TEST_FAIL=reload sandbox' 2>"$test_dir/err" | tr '\n' ' ')" = "${trust}${reload}${restart}${launch}${agent}claude " ]
     grep -Fq 'could not reload; restarting' "$test_dir/err"
     for failure in hash restart; do
         result=0
