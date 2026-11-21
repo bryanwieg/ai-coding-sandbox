@@ -61,7 +61,8 @@ exported in the shell (it overrides the env file); never edit or commit
   fix would then be in the image (02.1): an empty volume takes the image's
   directories only on first mount, so the broker must be the first container
   to mount it, which Compose's `depends_on` guarantees.
-- Open: a volume mounted at `/run/sandbox-lifecycle` on top of the proxy's
+- Verified (02.2, 2026-11-21): the volume mounted on top of the proxy's and daemon's tmpfs `/run` is visible: `ls -l /run/sandbox-lifecycle` in both containers lists `lifecycle.sock`.
+- Was open: a volume mounted at `/run/sandbox-lifecycle` on top of the proxy's
   and daemon's tmpfs `/run` is visible inside them. Check in 02.2 with a
   real `docker compose up` of the dev overlay (`ls /run/sandbox-lifecycle` in
   both). If it is not, mount the client socket at `/run/lifecycle` instead,
@@ -474,3 +475,8 @@ If any of 1-3 fails, revise 01.3 (the wrapper's agent role) before phase 03.
 - 2026-11-21 (02.1 builder stop): the pinned-output digest check moved
   from 02.1 to 02.2, because the `lifecycle-latest` reference it needs is
   added to Compose only in 02.2.
+- 2026-11-21 (02.2): verified by `check-sandbox` (and three mutations it
+  rejects: a services mount on `trust`, the daemon on the services subpath,
+  a writable agent mount), the pin and audit-session tests, the daemon and
+  forwarder tests, `audit-sandbox --no-docker` and the full audit; rendered
+  grace periods 25s/15s/15s/none.
