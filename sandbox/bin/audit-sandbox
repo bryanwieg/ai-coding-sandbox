@@ -273,182 +273,189 @@ done
 
 host_functions=$root_dir/shell/sandbox.sh
 project_filter=label=com.docker.compose.project=$project_name
-for scenario in host-stop watcher startup-window recreation; do
-    log=$audit_dir/$scenario.log
-    case "$scenario" in
-        host-stop)
-            # wait is interruptible, so the shell handles TERM while sleep runs.
-            session claude 'trap "touch host-stop-term; exit 0" TERM; touch host-stop-ready; sleep 60 & wait' > "$log" 2>&1 &
-            ;;
-        watcher)
-            bash -c '. "$1" && sandbox claude sleep 300' bash "$host_functions" </dev/null > "$log" 2>&1 &
-            ;;
-        startup-window)
-            docker compose --env-file .sandbox/env up -d --pull never lifecycle egress-proxy
-            broker_id=$(docker compose --env-file .sandbox/env ps -q lifecycle)
-            started_at=$(docker inspect -f '{{.State.StartedAt}}' "$broker_id")
-            started=$(date -d "$started_at" +%s)
-            for offset in 10 100; do
-                delay=$((started + offset - $(date +%s)))
-                if [ "$delay" -gt 0 ]; then sleep "$delay"; fi
-                status=$(docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status)
-                remaining=$(printf '%s\n' "$status" | sed -n 's/^remaining=//p')
-                if [ "$offset" = 10 ]; then
-                    if ! printf '%s\n' "$status" | grep -Fxq 'services=egress-proxy'; then
-                        fail "the proxy did not join the starting broker: $status"
-                        exit 1
-                    fi
-                    early_remaining=$remaining
-                fi
-            done
-            if ! [ "$remaining" -lt "$early_remaining" ]; then
-                fail "startup window did not decrease: $early_remaining then $remaining"
-                exit 1
-            fi
-            docker compose --env-file .sandbox/env restart --no-deps egress-proxy
-            deadline=$(($(date +%s) + 10))
-            while :; do
-                status=$(docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status)
-                remaining=$(printf '%s\n' "$status" | sed -n 's/^remaining=//p')
-                if printf '%s\n' "$status" | grep -Fxq 'services=egress-proxy' && [ "$remaining" -ge 110 ]; then
-                    break
-                fi
-                if [ "$(date +%s)" -ge "$deadline" ]; then
-                    fail "proxy rejoin did not reset the startup window: $status"
-                    exit 1
-                fi
-                sleep 1
-            done
-            delay=$((started + 130 - $(date +%s)))
-            if [ "$delay" -gt 0 ]; then sleep "$delay"; fi
-            if [ "$(docker compose --env-file .sandbox/env ps -q lifecycle)" != "$broker_id" ] ||
-                [ "$(docker inspect -f '{{.State.StartedAt}}' "$broker_id")" != "$started_at" ] ||
-                ! docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status | grep -Fxq 'state=starting'; then
-                fail 'the original broker did not stay in starting past its first startup window'
-                exit 1
-            fi
-            session claude 'exec sleep 5' > "$log" 2>&1 &
-            ;;
-        recreation)
-            session claude 'exec sleep 60' > "$log" 2>&1 &
-            ;;
-    esac
-    launcher=$!
+
+# Keep the admitting status for the caller, and wait for its fixture if needed.
+wait_for_agent() {
     deadline=$(($(date +%s) + 300))
     while :; do
         if ! kill -0 "$launcher" 2>/dev/null; then
-            fail "$scenario launcher exited before the agent was ready: $(cat "$log")"
+            fail "launcher exited before the agent was ready ($log): $(cat "$log")"
             exit 1
         fi
         if [ "$(date +%s)" -ge "$deadline" ]; then
             kill -KILL "$launcher" 2>/dev/null || :
             wait "$launcher" 2>/dev/null || :
-            fail "timed out waiting for the $scenario agent: $(cat "$log")"
+            fail "timed out waiting for the agent ($log): $(cat "$log")"
             exit 1
         fi
         status=$(docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status 2>/dev/null) || status=
-        if printf '%s\n' "$status" | grep -Fxq 'agents=claude'; then
-            case "$scenario" in
-                watcher)
-                    orphan=$(docker ps -q --filter "$project_filter" --filter label=ai-coding-sandbox.client)
-                    if [ -n "$orphan" ]; then break; fi
-                    ;;
-                host-stop) if [ -e host-stop-ready ]; then break; fi ;;
-                *) break ;;
-            esac
+        if printf '%s\n' "$status" | grep -Fxq 'agents=claude' && "$@"; then
+            return
         fi
         sleep 1
     done
+}
 
-    case "$scenario" in
-        host-stop)
-            one_off=$(docker compose --env-file .sandbox/env run -d --pull never claude true)
-            if [ "$(timeout 30 docker wait "$one_off")" != 0 ]; then
-                fail 'the disposable one-off did not finish successfully'
-                exit 1
-            fi
-            if ! bash -c '. "$1" && sandbox-status' bash "$host_functions" | grep -Fxq 'agents=claude'; then
-                fail 'host sandbox-status did not list the session'
-                exit 1
-            fi
-            pass 'host sandbox-status lists the session'
-            if ! timeout 40 bash -c '. "$1" && sandbox-stop' bash "$host_functions"; then
-                fail 'host sandbox-stop did not finish successfully within 40s'
-                exit 1
-            fi
-            containers=$(docker ps -aq --filter "$project_filter")
-            if [ -n "$containers" ] || [ ! -e host-stop-term ]; then
-                fail "host sandbox-stop left containers ($containers) or the agent missed TERM"
-                exit 1
-            fi
-            wait "$launcher" || :
-            pass 'host sandbox-stop ends and removes the group'
-            continue
-            ;;
-        watcher)
-            deadline=$(($(date +%s) + 30))
-            kill -KILL "$launcher"
-            wait "$launcher" 2>/dev/null || :
-            while :; do
-                left=$(docker ps -aq --filter "$project_filter" --filter "id=$orphan")
-                if [ -z "$left" ] && [ "$(date +%s)" -le "$deadline" ]; then break; fi
-                if [ "$(date +%s)" -ge "$deadline" ]; then
-                    fail "host watcher left orphaned container $orphan: $(cat "$log")"
-                    exit 1
-                fi
-                sleep 1
-            done
-            check='host watcher stops an orphaned launch'
-            ;;
-        startup-window)
-            if ! wait "$launcher" ||
-                [ "$(docker compose --env-file .sandbox/env ps -a -q lifecycle)" != "$broker_id" ] ||
-                [ "$(docker inspect -f '{{.State.StartedAt}}' "$broker_id")" != "$started_at" ]; then
-                fail "the original broker did not admit the session: $(cat "$log")"
-                exit 1
-            fi
-            check='a helper join extends the startup window'
-            ;;
-        recreation)
-            broker_id=$(docker compose --env-file .sandbox/env ps -q lifecycle)
-            agent_id=$(docker ps -q --filter "$project_filter" --filter label=com.docker.compose.service=claude)
-            services=$(printf '%s\n' "$status" | sed -n 's/^services=//p')
-            if [ -z "$broker_id" ] || [ -z "$agent_id" ] || [ -z "$services" ]; then
-                fail "missing broker, agent or services before recreation: $status"
-                exit 1
-            fi
-            deadline=$(($(date +%s) + 30))
-            docker compose --env-file .sandbox/env up -d --no-deps --force-recreate --pull never lifecycle
-            while [ "$(date +%s)" -lt "$deadline" ]; do
-                new_id=$(docker compose --env-file .sandbox/env ps -q lifecycle)
-                status=$(docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status 2>/dev/null) || status=
-                if [ -n "$new_id" ] && [ "$new_id" != "$broker_id" ] &&
-                    printf '%s\n' "$status" | grep -Fxq 'agents=claude' &&
-                    [ "$(docker inspect -f '{{.State.Running}}' "$agent_id")" = true ]; then
-                    joined=$(printf '%s\n' "$status" | sed -n 's/^services=//p')
-                    all_joined=true
-                    for service in $services; do
-                        case " $joined " in *" $service "*) ;; *) all_joined=false ;; esac
-                    done
-                    if "$all_joined"; then break; fi
-                fi
-                sleep 1
-            done
-            if [ "$(date +%s)" -ge "$deadline" ] || ! wait "$launcher"; then
-                fail "broker recreation interrupted the session or its services: $status; $(cat "$log")"
-                exit 1
-            fi
-            check='broker recreation keeps sessions'
-            ;;
-    esac
+stop_audit_group() {
     bash -c '. "$1" && sandbox-stop' bash "$host_functions"
     running=$(docker ps -q --filter "$project_filter")
     if [ -n "$running" ]; then
-        fail "$scenario left containers running: $running"
+        fail "sandbox-stop left containers running: $running"
         exit 1
     fi
-    pass "$check"
+}
+
+log=$audit_dir/host-stop.log
+# wait is interruptible, so the shell handles TERM while sleep runs.
+session claude 'trap "touch host-stop-term; exit 0" TERM; touch host-stop-ready; sleep 60 & wait' > "$log" 2>&1 &
+launcher=$!
+wait_for_agent test -e host-stop-ready
+one_off=$(docker compose --env-file .sandbox/env run -d --pull never claude true)
+if [ "$(timeout 30 docker wait "$one_off")" != 0 ]; then
+    fail 'the disposable one-off did not finish successfully'
+    exit 1
+fi
+if ! bash -c '. "$1" && sandbox-status' bash "$host_functions" | grep -Fxq 'agents=claude'; then
+    fail 'host sandbox-status did not list the session'
+    exit 1
+fi
+pass 'host sandbox-status lists the session'
+if ! timeout 40 bash -c '. "$1" && sandbox-stop' bash "$host_functions"; then
+    fail 'host sandbox-stop did not finish successfully within 40s'
+    exit 1
+fi
+containers=$(docker ps -aq --filter "$project_filter")
+if [ -n "$containers" ] || [ ! -e host-stop-term ]; then
+    fail "host sandbox-stop left containers ($containers) or the agent missed TERM"
+    exit 1
+fi
+wait "$launcher" || :
+pass 'host sandbox-stop ends and removes the group'
+
+watcher_container_running() {
+    orphan=$(docker ps -q --filter "$project_filter" --filter label=ai-coding-sandbox.client) || exit 1
+    [ -n "$orphan" ]
+}
+
+log=$audit_dir/watcher.log
+bash -c '. "$1" && sandbox claude sleep 300' bash "$host_functions" </dev/null > "$log" 2>&1 &
+launcher=$!
+wait_for_agent watcher_container_running
+deadline=$(($(date +%s) + 30))
+kill -KILL "$launcher"
+wait "$launcher" 2>/dev/null || :
+while :; do
+    left=$(docker ps -aq --filter "$project_filter" --filter "id=$orphan")
+    if [ -z "$left" ] && [ "$(date +%s)" -le "$deadline" ]; then break; fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        fail "host watcher left orphaned container $orphan: $(cat "$log")"
+        exit 1
+    fi
+    sleep 1
 done
+stop_audit_group
+pass 'host watcher stops an orphaned launch'
+
+log=$audit_dir/startup-window.log
+docker compose --env-file .sandbox/env up -d --pull never lifecycle egress-proxy
+broker_id=$(docker compose --env-file .sandbox/env ps -q lifecycle)
+started_at=$(docker inspect -f '{{.State.StartedAt}}' "$broker_id")
+started=$(date -d "$started_at" +%s)
+for offset in 10 100; do
+    delay=$((started + offset - $(date +%s)))
+    if [ "$delay" -gt 0 ]; then sleep "$delay"; fi
+    status=$(docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status)
+    remaining=$(printf '%s\n' "$status" | sed -n 's/^remaining=//p')
+    if [ "$offset" = 10 ]; then
+        if ! printf '%s\n' "$status" | grep -Fxq 'services=egress-proxy'; then
+            fail "the proxy did not join the starting broker: $status"
+            exit 1
+        fi
+        early_remaining=$remaining
+    fi
+done
+if ! [ "$remaining" -lt "$early_remaining" ]; then
+    fail "startup window did not decrease: $early_remaining then $remaining"
+    exit 1
+fi
+before_restart=$remaining
+docker compose --env-file .sandbox/env restart --no-deps egress-proxy
+deadline=$(($(date +%s) + 10))
+while :; do
+    status=$(docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status)
+    remaining=$(printf '%s\n' "$status" | sed -n 's/^remaining=//p')
+    if printf '%s\n' "$status" | grep -Fxq 'services=egress-proxy' &&
+        [ "$remaining" -ge 110 ] && [ "$remaining" -gt "$before_restart" ]; then
+        break
+    fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        fail "proxy rejoin did not reset the startup window (before restart: $before_restart): $status"
+        exit 1
+    fi
+    sleep 1
+done
+delay=$((started + 130 - $(date +%s)))
+if [ "$delay" -gt 0 ]; then sleep "$delay"; fi
+if [ "$(docker compose --env-file .sandbox/env ps -q lifecycle)" != "$broker_id" ] ||
+    [ "$(docker inspect -f '{{.State.StartedAt}}' "$broker_id")" != "$started_at" ] ||
+    ! docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status | grep -Fxq 'state=starting'; then
+    fail 'the original broker did not stay in starting past its first startup window'
+    exit 1
+fi
+session claude '
+    for _ in $(seq 300); do
+        [ -e startup-window-admitted ] && exit 0
+        sleep 1
+    done
+    echo "timed out waiting for startup-window-admitted" >&2
+    exit 1
+' > "$log" 2>&1 &
+launcher=$!
+wait_for_agent true
+touch startup-window-admitted
+if ! wait "$launcher" ||
+    [ "$(docker compose --env-file .sandbox/env ps -a -q lifecycle)" != "$broker_id" ] ||
+    [ "$(docker inspect -f '{{.State.StartedAt}}' "$broker_id")" != "$started_at" ]; then
+    fail "the original broker did not admit the session: $(cat "$log")"
+    exit 1
+fi
+stop_audit_group
+pass 'a helper join extends the startup window'
+
+log=$audit_dir/recreation.log
+session claude 'exec sleep 60' > "$log" 2>&1 &
+launcher=$!
+wait_for_agent true
+broker_id=$(docker compose --env-file .sandbox/env ps -q lifecycle)
+agent_id=$(docker ps -q --filter "$project_filter" --filter label=com.docker.compose.service=claude)
+services=$(printf '%s\n' "$status" | sed -n 's/^services=//p')
+if [ -z "$broker_id" ] || [ -z "$agent_id" ] || [ -z "$services" ]; then
+    fail "missing broker, agent or services before recreation: $status"
+    exit 1
+fi
+deadline=$(($(date +%s) + 30))
+docker compose --env-file .sandbox/env up -d --no-deps --force-recreate --pull never lifecycle
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    new_id=$(docker compose --env-file .sandbox/env ps -q lifecycle)
+    status=$(docker compose --env-file .sandbox/env exec -T lifecycle sandbox-lifecycle status 2>/dev/null) || status=
+    if [ -n "$new_id" ] && [ "$new_id" != "$broker_id" ] &&
+        printf '%s\n' "$status" | grep -Fxq 'agents=claude' &&
+        [ "$(docker inspect -f '{{.State.Running}}' "$agent_id")" = true ]; then
+        joined=$(printf '%s\n' "$status" | sed -n 's/^services=//p')
+        all_joined=true
+        for service in $services; do
+            case " $joined " in *" $service "*) ;; *) all_joined=false ;; esac
+        done
+        if "$all_joined"; then break; fi
+    fi
+    sleep 1
+done
+if [ "$(date +%s)" -ge "$deadline" ] || ! wait "$launcher"; then
+    fail "broker recreation interrupted the session or its services: $status; $(cat "$log")"
+    exit 1
+fi
+stop_audit_group
+pass 'broker recreation keeps sessions'
 
 if [ "$audit_docker" = true ]; then
     # The daemon is rootless, needs the client certificate, maps inner root to
