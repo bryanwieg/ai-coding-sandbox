@@ -3,7 +3,7 @@
 Implement with the implement-in-phases skill; do not build from this file
 without it. Model tiers map to models in [models.md](models.md) and
 [models-codex.md](models-codex.md).
-Status: planned
+Status: built 60f63ae
 Before: phases 01-04 built and in draft PR #12; the user asked to close the
 test gaps found after CI passed (2026-11-21).
 After: automated tests cover forced-end containment in service and agent
@@ -38,8 +38,8 @@ CI's `--no-docker` audit.
 
 | Stage | Goal | Tier | Order | Status |
 | --- | --- | --- | --- | --- |
-| 05.1 | Forced-end containment tests for a service and an agent | top | parallel with 05.2 | planned |
-| 05.2 | Audit: real host functions, startup-window reset, broker recreation | top | parallel with 05.1 | planned |
+| 05.1 | Forced-end containment tests for a service and an agent | top | parallel with 05.2 | done |
+| 05.2 | Audit: real host functions, startup-window reset, broker recreation | top | parallel with 05.1 | done |
 
 ## 05.1 Forced-end containment tests
 
@@ -205,3 +205,8 @@ run-dependent branch; P1: adapting the stubbed watcher test).
   its log; recreation requires every prior service to rejoin and the
   session to finish 0; scores corrected. Further rounds kept refining the
   same checks, so the phase review covers the rest.
+- 2026-11-21 (phase review, Codex gpt-6.2-astra high, verdict ready): three
+  audit refinements applied. Verified: test-session-proxy and -state (both
+  new checks ok), test-audit-session, ShellCheck, `audit-sandbox
+  --no-docker` and the full audit (all five new checks ok, no leftover
+  audit networks or containers).
