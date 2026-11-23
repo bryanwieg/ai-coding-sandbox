@@ -2,7 +2,8 @@
 # Host test for the plugin synchronization startup hooks of both agents, with
 # a stubbed agent CLI: marketplaces are added and plugins installed in manifest
 # order, the checksum is recorded only after every entry succeeds, an unchanged
-# manifest does no work, and Codex waits until it is signed in.
+# manifest updates Claude's plugins and does no Codex work, and Codex waits
+# until it is signed in.
 set -eu
 
 sandbox_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -82,11 +83,22 @@ plugin add two@market' ;;
         fail "$agent did not synchronize the manifest in order"
     fi
 
-    run "$agent"
-    if [ ! -s "$calls" ]; then
-        pass "$agent skips an unchanged manifest"
+    if [ "$agent" = claude ]; then
+        updates='plugin marketplace update
+plugin update one@market
+plugin update two@market'
+        if FAIL_TWO=1 run claude && [ "$(cat "$calls")" = "$updates" ]; then
+            pass 'claude updates an unchanged manifest and survives a failed update'
+        else
+            fail 'claude did not update an unchanged manifest'
+        fi
     else
-        fail "$agent synchronized an unchanged manifest"
+        run "$agent"
+        if [ ! -s "$calls" ]; then
+            pass "$agent skips an unchanged manifest"
+        else
+            fail "$agent synchronized an unchanged manifest"
+        fi
     fi
 done
 
