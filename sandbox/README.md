@@ -801,8 +801,10 @@ Each agent has a plugin manifest, [`codex/plugins.txt`](codex/plugins.txt) and
 [`claude/plugins.txt`](claude/plugins.txt). Every start sets up both agents,
 the started one first, since either may run the other. On the first start
 after a manifest changes, its agent installs each plugin through its marketplace
-command and records the manifest's checksum in the state volume; later starts
-do no plugin work. Codex installs plugins only once it is signed in, and
+command and records the manifest's checksum in the state volume. Later starts
+update Claude's marketplaces and plugins to their latest versions, which apply
+from that session on, and a failed update keeps the installed version; Codex's
+later starts do no plugin work. Codex installs plugins only once it is signed in, and
 Claude, in Codex sessions, likewise; until then the other agent's setup
 stays quiet. The Context7 key is checked once per start. Both
 manifests can name GitHub-hosted marketplaces (`marketplace owner/repo`),
