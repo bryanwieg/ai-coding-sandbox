@@ -55,7 +55,7 @@ RUN cd /opt/codex \
 
 # Supplies the Docker CLI and its compose and buildx plugins to the agent
 # images, and the rootless daemon of sessions that allow Docker.
-FROM docker:29.9.3-dind-rootless@sha256:707a099b8ddd86306eb28c8b1775264a3ee0135b16dc505b7b48ffb328edf8d0 AS docker-upstream
+FROM docker:29.10.0-dind-rootless@sha256:5a703ad0d72cd5e4fb4beca8024d6eddef6d22a46ed1d9812bf3d24ff43ccbce AS docker-upstream
 
 # Rootless session daemon. Any runtime UID from 500 to 65533 gets a fixed,
 # root-owned identity whose group equals the UID, so no per-user build and no
