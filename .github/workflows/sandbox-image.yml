@@ -164,6 +164,7 @@ jobs:
               test "$CLAUDE_CONFIG_DIR" = /home/agent/.claude
               test "$CODEX_HOME" = /home/agent/.codex
               test "$CODEX_BUILD_SANDBOX" = danger-full-access
+              test "$CLAUDE_BUILD_PERMISSIONS" = bypassPermissions
               test "$(readlink /home/claude)" = /home/agent
               test "$(readlink /home/codex)" = /home/agent
               test "$DISABLE_AUTOUPDATER" = 1
