@@ -120,7 +120,8 @@ is useful only when `ssh` is on and keys are unlocked.
 Environment variables and secrets for both agents and the commands they run,
 such as `CONTEXT7_API_KEY` (an optional key for Context7's rate limits) or
 the session cleanup settings `SANDBOX_SCRATCHPAD_DAYS`, `SANDBOX_EXIT_CLEANUP`
-and `SANDBOX_EXIT_CURATE`, as
+and `SANDBOX_EXIT_CURATE`, or `AI_CODEX` (`off` turns Codex off, for the
+agent and for phased-delivery), as
 literal `NAME=value` lines (no quotes, no `export`). Mode `0600`
 and ignored by Git. Use the variables it provides; do not read the file
 itself.

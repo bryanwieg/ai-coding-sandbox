@@ -3,9 +3,10 @@
 # launched agent's (SANDBOX_AGENT), then the other agent's, each in name
 # order; run the launched agent's launcher; and once it exits, run the exit
 # hooks in name order and exit with the agent's status. The other agent is
-# set up too because the launched one may run it; its scripts stay quiet and
-# skip plugin synchronization until it is signed in. Command overrides (a
-# shell, an auth command) bypass this script entirely.
+# set up too because the launched one may run it, except Codex in a Claude
+# session with AI_CODEX=off; its scripts stay quiet and skip plugin
+# synchronization until it is signed in. Command overrides (a shell, an auth
+# command) bypass this script entirely.
 set -eu
 
 libexec_dir=/usr/local/libexec/sandbox
@@ -22,7 +23,12 @@ SANDBOX_SESSION_STARTED=${TMPDIR:-/tmp}/sandbox-session-started
 : > "$SANDBOX_SESSION_STARTED"
 export SANDBOX_SESSION_STARTED
 
-for script in "$libexec_dir"/init.d/* "$libexec_dir/$agent"/init.d/* "$libexec_dir/$other"/init.d/*; do
+# AI_CODEX=off means the user does not use Codex; a missing folder skips its setup.
+case "$other:${AI_CODEX:-}" in
+    codex:off) other_init=/nonexistent ;;
+    *) other_init=$libexec_dir/$other/init.d ;;
+esac
+for script in "$libexec_dir"/init.d/* "$libexec_dir/$agent"/init.d/* "$other_init"/*; do
     [ -f "$script" ] && [ -x "$script" ] || continue
     "$script"
 done
