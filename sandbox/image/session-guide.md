@@ -21,7 +21,10 @@ A session is a set of Compose services, all from the sandbox's images:
   container, so Codex runs with `danger-full-access` and the container is
   the boundary: the image sets that as Codex's default and as
   `CODEX_BUILD_SANDBOX`; do not pass `--sandbox read-only` or
-  `workspace-write`, under which every command fails.
+  `workspace-write`, under which every command fails. For the same
+  reason the image sets `CLAUDE_BUILD_PERMISSIONS=bypassPermissions`, so
+  a headless Claude builder (`claude -p` through phased-delivery's
+  `claude-build.sh`) can edit and run tests without approval prompts.
 - **`lifecycle`**: the broker that tracks the project's active sessions and
   stops the group after the last session ends.
 - **`egress-proxy`**: the only service with an Internet uplink. Every request

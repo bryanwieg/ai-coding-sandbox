@@ -277,7 +277,8 @@ ENV PATH="/opt/claude/node_modules/.bin:/opt/codex/node_modules/.bin:${PATH}" \
     ENABLE_CLAUDEAI_MCP_SERVERS=false \
     CLAUDE_CONFIG_DIR=/home/agent/.claude \
     CODEX_HOME=/home/agent/.codex \
-    CODEX_BUILD_SANDBOX=danger-full-access
+    CODEX_BUILD_SANDBOX=danger-full-access \
+    CLAUDE_BUILD_PERMISSIONS=bypassPermissions
 
 COPY --chmod=0755 claude/agent claude/auth /usr/local/libexec/sandbox/claude/
 COPY --chmod=0755 claude/init.d/ /usr/local/libexec/sandbox/claude/init.d/

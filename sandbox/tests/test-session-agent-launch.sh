@@ -255,6 +255,11 @@ if [ "$(docker run --rm --entrypoint printenv "$image" CODEX_BUILD_SANDBOX)" = d
 else
     fail 'CODEX_BUILD_SANDBOX is not danger-full-access'
 fi
+if [ "$(docker run --rm --entrypoint printenv "$image" CLAUDE_BUILD_PERMISSIONS)" = bypassPermissions ]; then
+    pass 'the image sets CLAUDE_BUILD_PERMISSIONS=bypassPermissions'
+else
+    fail 'CLAUDE_BUILD_PERMISSIONS is not bypassPermissions'
+fi
 mkdir -p "$test_dir/codex-user"
 printf 'sandbox_mode = "read-only"\n' > "$test_dir/codex-user/config.toml"
 # codex_sandbox USER_CONFIG [codex exec options...]: the sandbox codex exec reports.
