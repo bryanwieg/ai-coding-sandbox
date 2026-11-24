@@ -233,7 +233,7 @@ It asks for an optional Context7 API key, then creates:
 | File | Contents |
 | --- | --- |
 | `.sandbox/env` | Compose settings (mode `0600`) |
-| `.sandbox/agent.env` | Environment variables and secrets for both agents, including `CONTEXT7_API_KEY` and the session cleanup settings under [Session exit](#session-exit) (mode `0600`) |
+| `.sandbox/agent.env` | Environment variables and secrets for both agents, including `CONTEXT7_API_KEY`, `GITHUB_PERSONAL_ACCESS_TOKEN` and the session cleanup settings under [Session exit](#session-exit) (mode `0600`) |
 | `.sandbox/.gitignore` | Keeps `env` and `agent.env` out of Git |
 | `.sandbox/egress-policy.yaml` | Destinations this project adds to the base policy |
 | `.sandbox/ssh/config`, `.sandbox/ssh/known_hosts` | SSH client settings and host keys |
@@ -811,7 +811,12 @@ manifests can name GitHub-hosted marketplaces (`marketplace owner/repo`),
 cloned through the GitHub entries. Plugins that need the npm registry cannot
 install. Claude's GitHub plugin requires `GITHUB_PERSONAL_ACCESS_TOKEN` in
 `.sandbox/agent.env` and connects to `api.githubcopilot.com`, which the base
-policy allows over HTTPS. Both agents include Ponytail from its own
+policy allows over HTTPS. Each Claude start checks the token with one request
+to `api.github.com` (`sandbox-check-github`) and highlights a missing or
+rejected token, or one it could not check, without stopping the launch.
+Claude's `gopls-lsp` and `pyright-lsp` plugins give it LSP code intelligence
+for Go and Python through the image's gopls and Pyright language servers.
+Both agents include Ponytail from its own
 marketplace, `DietrichGebert/ponytail`, with its lifecycle hooks, and the
 user's own plugins from `bryanwieg/ai-coding-plugins`.
 `check-sandbox` rejects malformed entries.
@@ -820,7 +825,7 @@ user's own plugins from `bryanwieg/ai-coding-plugins`.
 
 The agent image has Node.js, Python 3 with `pytest`, `pytest-timeout`, `pycodestyle`, Ruff, PyYAML,
 Scapy and python-on-whales, the PHP CLI with the extensions OPNsense uses, Composer, PHPUnit and
-PHP_CodeSniffer, Go with GCC for cgo, PowerShell 7 (`pwsh`), Git with Git LFS, the GitHub CLI, `jq`, ShellCheck, BSD make (`bmake`, no GNU make), `xmllint`, netcat, the OpenSSH client, and the Docker CLI with its `compose`
+PHP_CodeSniffer, Go with GCC for cgo, the gopls and Pyright language servers, PowerShell 7 (`pwsh`), Git with Git LFS, the GitHub CLI, `jq`, ShellCheck, BSD make (`bmake`, no GNU make), `xmllint`, netcat, the OpenSSH client, and the Docker CLI with its `compose`
 and `buildx` plugins.
 The container supports source editing and lint, style and test tooling, not a
 FreeBSD package build.
@@ -833,6 +838,12 @@ volume after the project, so no other project's session sees it; both agents
 of the project share it, it persists between sessions, and `down -v` or
 `go clean -cache -modcache` empties it. `go install` puts binaries in
 `/cache/go/bin`, last on `PATH`, so they never shadow the image's tools.
+
+gopls is built from the Go module in [`gopls/`](gopls/), which pins its
+version, and installed as `/usr/local/bin/gopls`. `GOPLSCACHE` puts its file
+cache in `/cache/gopls`, in the same volume, because the home is read-only.
+Pyright (`pyright` and `pyright-langserver`) is pinned in `package.json` and
+installed with Context7 in `/opt/node-tools`.
 `GOTOOLCHAIN=local` stops `go` from downloading other toolchains. GCC and the
 C library headers are installed, so cgo and the race detector work. Modules
 download through the base policy's `proxy.golang.org`; private modules that
@@ -1026,7 +1037,8 @@ are the only check.
 Dependabot checks Codex and Claude Code daily. Its weekly
 maintenance group covers Docker images (including the SDK supplying
 PowerShell and the `golang` image supplying Go), Compose images,
-GitHub Actions, Context7 (`package.json`)
+GitHub Actions, Context7 and Pyright (`package.json`), gopls (the
+`sandbox/gopls` module)
 and Python tools (`requirements.in`, with every dependency locked by hash in
 the `pip-compile` output `requirements.txt`). Dependency installs use independent build stages
 so an update can reuse the other installs. Scheduled builds bypass the cache
