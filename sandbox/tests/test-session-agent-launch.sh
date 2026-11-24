@@ -63,7 +63,8 @@ done
 
 # sandbox-start runs the shared init scripts and both agents', then the named
 # agent's launcher. The other agent, signed out, syncs no plugins, and the
-# Context7 key is checked once. Stubs record calls.
+# Context7 key is checked once. The GitHub token is checked once in a Claude
+# start and never in a Codex start. Stubs record calls.
 cat > "$test_dir/record" <<'EOF'
 #!/bin/sh
 printf '%s %s\n' "$(basename "$0")" "$*" >> /tmp/calls
@@ -74,13 +75,15 @@ for agent in claude codex; do
     calls=$(docker run --rm --network none --read-only --tmpfs /tmp:mode=1777 --user "$(id -u):$(id -g)" \
         -v "$test_dir/record:/stubs/claude:ro" -v "$test_dir/record:/stubs/codex:ro" \
         -v "$test_dir/record:/stubs/sandbox-check-context7:ro" \
+        -v "$test_dir/record:/stubs/sandbox-check-github:ro" \
         -e PATH="/stubs:/usr/local/bin:/usr/bin:/bin" -e SANDBOX_AGENT="$agent" \
         -e CLAUDE_CONFIG_DIR=/tmp/claude -e CODEX_HOME=/tmp/codex \
         --entrypoint sh "$image" -c 'sandbox-start --probe >/dev/null 2>&1; cat /tmp/calls; ls /tmp')
-    case "$agent" in claude) other=codex ;; codex) other=claude ;; esac
+    case "$agent" in claude) other=codex github_checks=1 ;; codex) other=claude github_checks=0 ;; esac
     if printf '%s\n' "$calls" | grep -Eq "^$agent( .*)? --probe\$" &&
         ! printf '%s\n' "$calls" | grep -q "^$other " &&
         [ "$(printf '%s\n' "$calls" | grep -c '^sandbox-check-context7')" -eq 1 ] &&
+        [ "$(printf '%s\n' "$calls" | grep -c '^sandbox-check-github')" -eq "$github_checks" ] &&
         printf '%s\n' "$calls" | grep -Fxq "$agent" && printf '%s\n' "$calls" | grep -Fxq "$other"; then
         pass "sandbox-start sets up both agents and launches $agent only"
     else

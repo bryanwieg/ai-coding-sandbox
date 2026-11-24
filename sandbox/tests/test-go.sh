@@ -73,8 +73,28 @@ case $PATH in
     *":$GOPATH/bin") ;;
     *) echo 'GOPATH/bin is missing from PATH' >&2; exit 1 ;;
 esac
+
+# gopls checks a plain package (no cgo) of the module offline, with its cache
+# in the cache volume.
+test "$(command -v gopls)" = /usr/local/bin/gopls
+mkdir plain
+cat > plain/plain.go <<'GO'
+package plain
+
+func Answer() int { return 42 }
+GO
+plain_out=$(gopls check plain/plain.go)
+test -z "$plain_out"
+test -d /cache/gopls
+cat > plain/broken.go <<'GO'
+package plain
+
+func Broken() int { return "no" }
+GO
+gopls check plain/broken.go | grep -q 'broken.go:3'
 test ! -e "$HOME/go"
 test ! -e "$HOME/.cache"
+test ! -e "$HOME/.config"
 printf 'ok   %s builds cgo, runs -race tests and installs as %s with noexec /tmp\n' "$(go env GOVERSION)" "$(id -un)"
 EOF
 done

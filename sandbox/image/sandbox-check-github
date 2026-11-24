@@ -1,0 +1,33 @@
+#!/bin/sh
+# Report at launch whether GITHUB_PERSONAL_ACCESS_TOKEN, which Claude's GitHub
+# MCP plugin needs, is set and accepted by GitHub, by making one request
+# through the egress proxy. Problems are highlighted but never stop the launch.
+set -u
+
+url='https://api.github.com/user'
+
+warn() {
+    if [ -t 2 ]; then
+        printf '\033[1;31m%s\033[0m\n' "$*" >&2
+    else
+        printf '%s\n' "$*" >&2
+    fi
+}
+
+if [ -z "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]; then
+    warn "WARNING: GITHUB_PERSONAL_ACCESS_TOKEN is not set; Claude's GitHub MCP tools will not connect. Add it to .sandbox/agent.env."
+    exit 0
+fi
+
+# The header is read from stdin, so the token never appears in a process list.
+status=$(printf 'Authorization: Bearer %s\n' "$GITHUB_PERSONAL_ACCESS_TOKEN" |
+    curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 \
+        --header @- "$url")
+case "$status" in
+    200) echo 'GitHub: token accepted.' >&2 ;;
+    401) warn 'WARNING: GitHub rejected GITHUB_PERSONAL_ACCESS_TOKEN; GitHub MCP tools will fail until the token is fixed or replaced.' ;;
+    403|429) warn "WARNING: GitHub refused the token check (HTTP $status); the token may lack access or be rate limited." ;;
+    000) warn 'WARNING: GitHub is unreachable through the egress proxy; the token was not checked.' ;;
+    *) warn "WARNING: GitHub token check returned HTTP $status; GitHub MCP tools may fail." ;;
+esac
+exit 0

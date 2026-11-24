@@ -132,5 +132,20 @@ for agent in claude codex; do
     fi
 done
 
+# The shipped Claude manifest enables the language server plugins, and the
+# sync installs them.
+manifest=$sandbox_dir/claude/plugins.txt
+mkdir -p "$test_dir/state-shipped"
+: > "$calls"
+sed "s|/usr/local/share/claude/plugins.txt|$manifest|" "$sandbox_dir/claude/init.d/30-plugins" > "$test_dir/hook"
+if env CLAUDE_CONFIG_DIR="$test_dir/state-shipped" PATH="$test_dir/stubs:$PATH" sh "$test_dir/hook" >/dev/null 2>&1 \
+    && grep -qx 'plugin install gopls-lsp@claude-plugins-official' "$calls" \
+    && grep -qx 'plugin install pyright-lsp@claude-plugins-official' "$calls" \
+    && [ -s "$test_dir/state-shipped/plugins.manifest.sha256" ]; then
+    pass 'the shipped claude manifest enables gopls-lsp and pyright-lsp'
+else
+    fail 'the shipped claude manifest does not enable gopls-lsp and pyright-lsp'
+fi
+
 [ "$failures" -eq 0 ] || exit 1
 echo 'Plugin synchronization checks passed.'

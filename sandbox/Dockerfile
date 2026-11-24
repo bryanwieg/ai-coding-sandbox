@@ -15,6 +15,12 @@ RUN cd /src \
     && install -d -m 0755 /out/run/sandbox-lifecycle/agents \
         /out/run/sandbox-lifecycle/services /out/run/sandbox-lifecycle/daemon
 
+# Dependabot tracks gopls through gopls/go.mod; go.sum verifies the download.
+FROM go-upstream AS gopls-build
+COPY gopls/ /src/
+RUN cd /src \
+    && CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -ldflags='-s -w' -o /out/gopls golang.org/x/tools/gopls
+
 FROM python:3.15-slim-bookworm@sha256:96599df822d0e1c6bb700014a05c7f3c8cabc6e0f7ff3c4f9f69cee033b4b5d9 AS python-runtime
 
 # Keep independently updated dependencies out of each other's build cache.
@@ -216,14 +222,16 @@ COPY --from=lifecycle-build --chmod=0755 /out/sandbox-lifecycle /usr/local/bin/s
 # agents the same status|login|logout interface over their own auth scripts.
 COPY image/sandbox-entrypoint image/sandbox-start image/sandbox-auth \
     image/sandbox-agent-version image/sandbox-initialize-state \
-    image/sandbox-check-context7 image/sandbox-policy \
+    image/sandbox-check-context7 image/sandbox-check-github \
+    image/sandbox-policy \
     image/sandbox-init-config image/sandbox-migrate-state \
     image/sandbox-ssh-hostkey /usr/local/bin/
 COPY ssh/90-ssh-proxy.conf /etc/ssh/ssh_config.d/90-ssh-proxy.conf
 COPY image/gitconfig /etc/gitconfig
 RUN chmod 0755 /usr/local/bin/sandbox-entrypoint /usr/local/bin/sandbox-start /usr/local/bin/sandbox-auth \
         /usr/local/bin/sandbox-agent-version /usr/local/bin/sandbox-initialize-state \
-        /usr/local/bin/sandbox-check-context7 /usr/local/bin/sandbox-policy \
+        /usr/local/bin/sandbox-check-context7 /usr/local/bin/sandbox-check-github \
+        /usr/local/bin/sandbox-policy \
         /usr/local/bin/sandbox-init-config /usr/local/bin/sandbox-migrate-state \
         /usr/local/bin/sandbox-ssh-hostkey \
     && chmod 0644 /etc/ssh/ssh_config.d/90-ssh-proxy.conf /etc/gitconfig \
@@ -241,15 +249,17 @@ RUN cd /usr/local/share/sandbox \
 # Go in its own layer as well. The home is read-only and /tmp is noexec, so
 # GOPATH, GOCACHE and GOTMPDIR (where go test and go run execute builds) live
 # in the project's cache volume at /cache. The wrapper creates GOTMPDIR. GOTOOLCHAIN=local keeps go from
-# fetching other toolchains.
+# fetching other toolchains. gopls keeps its file cache there too.
 COPY --from=go-upstream /usr/local/go /usr/local/go
+COPY --from=gopls-build /out/gopls /usr/local/bin/gopls
 COPY --chmod=0755 image/sandbox-go /usr/local/libexec/sandbox/go
 RUN ln -s /usr/local/libexec/sandbox/go /usr/local/bin/go \
     && ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 ENV GOPATH=/cache/go \
     GOCACHE=/cache/go/build-cache \
     GOTMPDIR=/cache/go/tmp \
-    GOTOOLCHAIN=local
+    GOTOOLCHAIN=local \
+    GOPLSCACHE=/cache/gopls
 
 # Installed Go binaries come last on PATH, so they never shadow image tools.
 # The home is read-only, so interactive bash keeps its history in /tmp.

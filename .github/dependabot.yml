@@ -16,6 +16,12 @@ updates:
     patterns: ["*"]
     multi-ecosystem-group: weekly-maintenance
 
+  - package-ecosystem: gomod
+    # The module that pins gopls for the image.
+    directory: /sandbox/gopls
+    patterns: ["*"]
+    multi-ecosystem-group: weekly-maintenance
+
   - package-ecosystem: npm
     directory: /sandbox/codex
     schedule:

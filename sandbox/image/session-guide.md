@@ -121,7 +121,9 @@ is useful only when `ssh` is on and keys are unlocked.
 ### `agent.env`
 
 Environment variables and secrets for both agents and the commands they run,
-such as `CONTEXT7_API_KEY` (an optional key for Context7's rate limits) or
+such as `CONTEXT7_API_KEY` (an optional key for Context7's rate limits),
+`GITHUB_PERSONAL_ACCESS_TOKEN` (for Claude's GitHub plugin, checked at each
+Claude start) or
 the session cleanup settings `SANDBOX_SCRATCHPAD_DAYS`, `SANDBOX_EXIT_CLEANUP`
 and `SANDBOX_EXIT_CURATE`, or `AI_CODEX` (`off` turns Codex off, for the
 agent and for phased-delivery), as
@@ -177,6 +179,8 @@ project.
   PHPUnit and PHP_CodeSniffer), Go, and GCC for cgo. `GOPATH`, Go's caches
   and `GOTMPDIR` persist in `/cache/go`; `go install`ed binaries come last on
   `PATH`.
+- Language servers: gopls for Go (its cache is in `/cache/gopls`) and Pyright
+  for Python (`pyright`, `pyright-langserver`).
 - Also installed: PowerShell 7 (`pwsh`), Git with Git LFS, the GitHub CLI
   (`gh`), jq, ShellCheck, bmake (there is no GNU make), xmllint, netcat, the
   OpenSSH client, zip and unzip.
@@ -188,6 +192,8 @@ project.
   container's hostname is `sandbox`.
 - Context7 is configured as an MCP server: use it for current library and
   framework documentation instead of guessing.
+- Claude has LSP code intelligence for Go and Python through gopls and
+  Pyright: prefer it for definitions, references and diagnostics.
 
 ## Network
 
