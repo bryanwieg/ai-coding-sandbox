@@ -83,7 +83,8 @@ package plain
 
 func Answer() int { return 42 }
 GO
-test -z "$(gopls check plain/plain.go)"
+plain_out=$(gopls check plain/plain.go)
+test -z "$plain_out"
 test -d /cache/gopls
 cat > plain/broken.go <<'GO'
 package plain
