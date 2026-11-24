@@ -14,7 +14,15 @@ set -eu
 
 root_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 install="$root_dir/bin/install-shell-functions"
-test_dir=$(mktemp -d)
+# Stubs must be executable and outside any Git work tree (the functions stop in
+# a repository's subfolder): /tmp is noexec in sandbox sessions, whose /cache
+# allows exec.
+if [ -d /cache ] && [ -w /cache ]; then
+    mkdir -p /cache/tmp
+    test_dir=$(mktemp -d /cache/tmp/test.XXXXXX)
+else
+    test_dir=$(mktemp -d)
+fi
 trap 'rm -rf "$test_dir"' EXIT HUP INT TERM
 
 # The installer appends one line, once, and picks the rc file from $SHELL.
