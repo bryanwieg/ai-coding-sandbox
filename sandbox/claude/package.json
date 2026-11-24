@@ -4,6 +4,6 @@
   "version": "0.0.0",
   "description": "Pinned Claude Code CLI dependency installed in its own Docker layer.",
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.330"
+    "@anthropic-ai/claude-code": "2.1.331"
   }
 }
