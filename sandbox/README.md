@@ -1066,6 +1066,11 @@ COMPOSE_PROJECT_NAME=ai-coding-sandbox-session
 [`compose.dev.yaml`](compose.dev.yaml) only adds `build` sections and local
 image names; `check-sandbox` verifies that it changes nothing else.
 
+To build the images inside a session, the project's egress policy needs
+`registry.npmjs.org`, `.mcr.microsoft.com` (the .NET SDK supplying
+PowerShell, and its download hosts) and `deb.debian.org` under `https`.
+Builds get only the HTTPS proxy, so `apt` uses Debian's mirror over HTTPS.
+
 Before committing sandbox changes, run the structural check, the tests for
 what you changed, and ShellCheck on changed scripts:
 
