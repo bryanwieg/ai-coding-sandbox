@@ -14,7 +14,10 @@ prefix=sandbox-exit-test-$$
 held=$prefix-held
 uid=$(id -u)
 gid=$(id -g)
-test_dir=$(mktemp -d)
+# The session daemon must be able to bind-mount it: /tmp is not shared with it
+# in sandbox sessions, and is noexec there.
+mkdir -p "$sandbox_dir/tests/.tmp"
+test_dir=$(mktemp -d "$sandbox_dir/tests/.tmp/test.XXXXXX")
 failures=0
 # shellcheck source=lifecycle-helper.sh
 . "$sandbox_dir/tests/lifecycle-helper.sh"
@@ -29,6 +32,12 @@ trap 'exit 1' HUP INT TERM
 
 pass() { printf 'ok   %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; failures=$((failures + 1)); }
+# A rootless Docker daemon, such as a sandbox session's, shows the runner's files
+# as root's inside containers, so git there refuses the test repository (dubious
+# ownership) and the merged-branch checks can only run on a host daemon or in CI.
+rootless=false
+if docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q 'name=rootless'; then rootless=true; fi
+skip() { printf 'skip %s: needs a Docker daemon that keeps file owners (a host daemon or CI)\n' "$1"; }
 
 docker build --quiet --target agent --tag "$image" "$sandbox_dir" >/dev/null
 lifecycle_build
@@ -141,11 +150,15 @@ fi
 left=$(g for-each-ref --format='%(refname:short)' refs/heads | sort | tr '\n' ' ')
 if [ "$left" = 'current fresh kept-worktree main open ' ]; then
     pass 'merged, squashed and rebased branches go; current, fresh, worktree, open and default stay'
+elif [ "$rootless" = true ]; then
+    skip 'merged-branch cleanup'
 else
     fail "branches left: $left ($output)"
 fi
 if printf '%s\n' "$output" | grep -q '^Deleted merged branch squashed (was .*; restore: git branch squashed '; then
     pass 'each deletion prints how to restore the branch'
+elif [ "$rootless" = true ]; then
+    skip 'deletion report'
 else
     fail "deletion report: $output"
 fi

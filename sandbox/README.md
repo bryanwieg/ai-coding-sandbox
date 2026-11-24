@@ -1091,6 +1091,10 @@ sandbox/bin/check-sandbox
 sh sandbox/tests/test-session-init.sh    # and the other tests in sandbox/tests/
 ```
 
+In a sandbox session the session daemon is rootless, so containers see your
+files as root's. Tests that check file owners skip those checks there and say
+so; they run in full on a host daemon and in CI.
+
 `check-sandbox` renders the Compose file and checks each service's
 boundary: read-only root, dropped capabilities with only the documented
 additions, `no-new-privileges` except on the daemon, which services may run as

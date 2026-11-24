@@ -7,7 +7,9 @@
 set -eu
 
 sandbox_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-test_dir=$(mktemp -d)
+# Stubs must be executable: /tmp is noexec in sandbox sessions.
+mkdir -p "$sandbox_dir/tests/.tmp"
+test_dir=$(mktemp -d "$sandbox_dir/tests/.tmp/test.XXXXXX")
 failures=0
 trap 'rm -rf "$test_dir"' EXIT HUP INT TERM
 

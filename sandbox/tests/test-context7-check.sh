@@ -5,7 +5,9 @@ set -eu
 
 root_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 check="$root_dir/image/sandbox-check-context7"
-test_dir=$(mktemp -d)
+# Stubs must be executable: /tmp is noexec in sandbox sessions.
+mkdir -p "$root_dir/tests/.tmp"
+test_dir=$(mktemp -d "$root_dir/tests/.tmp/test.XXXXXX")
 trap 'rm -rf "$test_dir"' EXIT HUP INT TERM
 
 # The stub records its arguments and stdin, then answers with the configured

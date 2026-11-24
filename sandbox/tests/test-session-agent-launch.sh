@@ -9,7 +9,10 @@ set -eu
 
 sandbox_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 rules=/usr/local/share/sandbox/session-instructions.md
-test_dir=$(mktemp -d)
+# Stubs must be executable, and bind-mountable by the session daemon (the
+# project is its only shared folder): /tmp is noexec in sandbox sessions.
+mkdir -p "$sandbox_dir/tests/.tmp"
+test_dir=$(mktemp -d "$sandbox_dir/tests/.tmp/test.XXXXXX")
 trap 'rm -rf "$test_dir"' EXIT HUP INT TERM
 failures=0
 
