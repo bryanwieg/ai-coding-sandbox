@@ -2,6 +2,14 @@
 # Build the actual initializer image and exercise it without either agent.
 set -eu
 
+# A rootless Docker daemon, such as a sandbox session's, shows the runner's
+# files as root's inside containers, which the ownership checks here cannot
+# tell apart from a real problem. Run this test on a host daemon or in CI.
+if docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q 'name=rootless'; then
+    echo 'skip: needs a Docker daemon that keeps file owners (a host daemon or CI), not a rootless one'
+    exit 0
+fi
+
 sandbox_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 image=ai-coding-sandbox-init:test
 uid=$(id -u)
