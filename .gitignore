@@ -11,3 +11,4 @@
 
 /src/*
 !/src/.gitkeep
+/sandbox/tests/.tmp/

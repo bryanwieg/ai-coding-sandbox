@@ -10,7 +10,9 @@ set -eu
 
 root_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 install="$root_dir/../install.sh"
-test_dir=$(mktemp -d)
+# Stubs must be executable: /tmp is noexec in sandbox sessions.
+mkdir -p "$root_dir/tests/.tmp"
+test_dir=$(mktemp -d "$root_dir/tests/.tmp/test.XXXXXX")
 trap 'rm -rf "$test_dir"' EXIT HUP INT TERM
 
 cp "$root_dir/shell/sandbox.sh" "$test_dir/sandbox.sh"
