@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "description": "Pinned Node-based support tools installed in the Codex sandbox image.",
   "dependencies": {
-    "@upstash/context7-mcp": "4.7.1",
+    "@upstash/context7-mcp": "4.7.3",
     "pyright": "1.1.414"
   }
 }

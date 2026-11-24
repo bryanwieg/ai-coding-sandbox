@@ -2,7 +2,7 @@ FROM node:26-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c01
 
 # Microsoft now ships PowerShell in its SDK image. Dependabot tracks this
 # source; only PowerShell and its .NET runtime reach the agent images.
-FROM mcr.microsoft.com/dotnet/sdk:10.0.404-noble-amd64@sha256:a82c44c2efe00953d66a37e90d307c4cfbd1e974b16e3b2a2fc665331946c9af AS powershell-upstream
+FROM mcr.microsoft.com/dotnet/sdk:10.0.404-noble-amd64@sha256:cd28130a4da76d2dc11c360b6d9f18c673d6fe15252f91c073ba358a1318cfb0 AS powershell-upstream
 
 # Dependabot tracks this source by its full version tag and digest; only the
 # Go distribution under /usr/local/go reaches the agent images.
@@ -93,7 +93,7 @@ USER 1000
 
 # Published port forwarder. It only relays the ports in SANDBOX_PUBLISH_PORTS
 # from the host to the session daemon, and ends with the session group.
-FROM alpine/socat:1.8.1.3@sha256:71131702f671a88b3808a70b7330f9679cd9b9933adcafadc191508edfe55bba AS session-forwarder
+FROM alpine/socat:1.8.1.3@sha256:5aa280c6fc5bee94dbd2bbdf2a58d30f50396eaa110be84b03636945b157ae68 AS session-forwarder
 USER 65534:65534
 COPY --chmod=0755 image/sandbox-forward /usr/local/bin/sandbox-forward
 COPY --from=lifecycle-build --chmod=0755 /out/sandbox-lifecycle /usr/local/bin/sandbox-lifecycle
