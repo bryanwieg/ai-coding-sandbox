@@ -120,6 +120,10 @@ jobs:
               docker buildx version
               node -p "require(\"/opt/node-tools/package.json\").dependencies[\"@upstash/context7-mcp\"]"
               test -d /opt/node-tools/node_modules/@upstash/context7-mcp
+              test "$(pyright --version)" = "pyright $(node -p "require(\"/opt/node-tools/package.json\").dependencies.pyright")"
+              command -v pyright-langserver
+              printf "x: int = 1\n" > /tmp/lsp_check.py
+              pyright /tmp/lsp_check.py
             '
 
       - name: Smoke test the agent image

@@ -4,6 +4,8 @@
 # Plugins that need the npm registry cannot install, because it is blocked.
 marketplace anthropics/claude-plugins-official
 github@claude-plugins-official
+gopls-lsp@claude-plugins-official
+pyright-lsp@claude-plugins-official
 claude-security@claude-plugins-official
 code-review@claude-plugins-official
 pr-review-toolkit@claude-plugins-official
