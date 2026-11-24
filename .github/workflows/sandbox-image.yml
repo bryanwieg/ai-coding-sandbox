@@ -106,6 +106,10 @@ jobs:
                 echo "Removed cloud tools are still installed" >&2
                 exit 1
               fi
+              if grep -q "http://deb.debian.org" /etc/apt/sources.list.d/debian.sources; then
+                echo "apt still uses plain HTTP; sandbox builds have only an HTTPS proxy" >&2
+                exit 1
+              fi
               python3 -c "import pycodestyle, pytest, pytest_timeout, python_on_whales, ruff, scapy, yaml; assert yaml.safe_load(\"answer: 42\") == {\"answer\": 42}"
               pycodestyle --version
               ruff --version

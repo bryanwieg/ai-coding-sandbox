@@ -141,7 +141,12 @@ FROM node-runtime AS base
 
 ARG GH_CLI_KEYRING_SHA256=6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b
 
-RUN apt-get update \
+# apt reaches Debian over HTTPS, since builds in a sandbox session have only an
+# HTTPS proxy. The slim image has no CA bundle yet, so the pinned golang
+# image's verifies the mirror until ca-certificates installs its own.
+COPY --from=go-upstream /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+RUN sed -i 's|http://deb.debian.org/|https://deb.debian.org/|' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && curl --fail --silent --show-error --location \
         --output /tmp/githubcli-archive-keyring.gpg \
