@@ -838,16 +838,16 @@ volume after the project, so no other project's session sees it; both agents
 of the project share it, it persists between sessions, and `down -v` or
 `go clean -cache -modcache` empties it. `go install` puts binaries in
 `/cache/go/bin`, last on `PATH`, so they never shadow the image's tools.
+`GOTOOLCHAIN=local` stops `go` from downloading other toolchains. GCC and the
+C library headers are installed, so cgo and the race detector work. Modules
+download through the base policy's `proxy.golang.org`; private modules that
+bypass it need their Git host (GitHub and GitLab are in the base list).
 
 gopls is built from the Go module in [`gopls/`](gopls/), which pins its
 version, and installed as `/usr/local/bin/gopls`. `GOPLSCACHE` puts its file
 cache in `/cache/gopls`, in the same volume, because the home is read-only.
 Pyright (`pyright` and `pyright-langserver`) is pinned in `package.json` and
 installed with Context7 in `/opt/node-tools`.
-`GOTOOLCHAIN=local` stops `go` from downloading other toolchains. GCC and the
-C library headers are installed, so cgo and the race detector work. Modules
-download through the base policy's `proxy.golang.org`; private modules that
-bypass it need their Git host (GitHub and GitLab are in the base list).
 
 The default shell is `/bin/bash` (both the login shell and `$SHELL`), and
 both agent services use the hostname `sandbox`. Start one with
