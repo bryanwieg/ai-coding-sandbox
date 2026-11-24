@@ -58,6 +58,7 @@ jobs:
           sh sandbox/tests/test-plugin-sync.sh
           sh sandbox/tests/test-claude-settings.sh
           sh sandbox/tests/test-context7-check.sh
+          sh sandbox/tests/test-github-check.sh
           [ -x /usr/sbin/sshd ] || sudo apt-get install -y -qq --no-install-recommends openssh-server
           sh sandbox/tests/test-ssh-hostkey.sh
           sh sandbox/tests/test-pin-session-images.sh

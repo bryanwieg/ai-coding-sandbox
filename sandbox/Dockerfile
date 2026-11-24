@@ -222,14 +222,16 @@ COPY --from=lifecycle-build --chmod=0755 /out/sandbox-lifecycle /usr/local/bin/s
 # agents the same status|login|logout interface over their own auth scripts.
 COPY image/sandbox-entrypoint image/sandbox-start image/sandbox-auth \
     image/sandbox-agent-version image/sandbox-initialize-state \
-    image/sandbox-check-context7 image/sandbox-policy \
+    image/sandbox-check-context7 image/sandbox-check-github \
+    image/sandbox-policy \
     image/sandbox-init-config image/sandbox-migrate-state \
     image/sandbox-ssh-hostkey /usr/local/bin/
 COPY ssh/90-ssh-proxy.conf /etc/ssh/ssh_config.d/90-ssh-proxy.conf
 COPY image/gitconfig /etc/gitconfig
 RUN chmod 0755 /usr/local/bin/sandbox-entrypoint /usr/local/bin/sandbox-start /usr/local/bin/sandbox-auth \
         /usr/local/bin/sandbox-agent-version /usr/local/bin/sandbox-initialize-state \
-        /usr/local/bin/sandbox-check-context7 /usr/local/bin/sandbox-policy \
+        /usr/local/bin/sandbox-check-context7 /usr/local/bin/sandbox-check-github \
+        /usr/local/bin/sandbox-policy \
         /usr/local/bin/sandbox-init-config /usr/local/bin/sandbox-migrate-state \
         /usr/local/bin/sandbox-ssh-hostkey \
     && chmod 0644 /etc/ssh/ssh_config.d/90-ssh-proxy.conf /etc/gitconfig \

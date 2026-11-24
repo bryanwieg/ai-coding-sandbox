@@ -1,0 +1,8 @@
+#!/bin/sh
+# Check the GitHub plugin's token once per Claude start, after the plugin
+# sync. Claude's init scripts also run in Codex sessions, which skip it.
+set -eu
+
+if [ "${SANDBOX_AGENT:-claude}" = claude ]; then
+    sandbox-check-github
+fi
