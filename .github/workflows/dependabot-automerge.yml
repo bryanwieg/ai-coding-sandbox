@@ -41,10 +41,22 @@ jobs:
               ;;
           esac
 
-          gh pr merge "$PR_NUMBER" \
-            --repo "$GH_REPO" \
-            --squash \
-            --delete-branch
+          # Another merge landing seconds earlier makes GitHub refuse this
+          # one with "Base branch was modified"; retry only that refusal.
+          for attempt in 1 2 3 4 5; do
+            if out="$(gh pr merge "$PR_NUMBER" \
+              --repo "$GH_REPO" \
+              --squash \
+              --delete-branch 2>&1)"; then
+              echo "$out"
+              break
+            fi
+            echo "$out" >&2
+            if [[ "$out" != *"Base branch was modified"* || "$attempt" == 5 ]]; then
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
 
           # Merges made with GITHUB_TOKEN do not trigger push workflows, so
           # dispatch the release, which rebuilds every image.
