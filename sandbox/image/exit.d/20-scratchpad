@@ -20,7 +20,8 @@ changed=$(find "$scratch" -mindepth 1 ! -name .gitignore ! -name .session-days -
 
 prompt='Tidy this project'"'"'s .ai-scratchpad/ folder at the end of a work session; this is your only task.
 List everything in it, then:
-- Delete what is no longer needed: plans and task notes for work that is done (check the git log and branches), notes superseded by newer notes or by the project'"'"'s docs, and logs or outputs of finished runs.
+- Delete a plan (anything in plans/, or any other plan) only when its work is already merged into the default branch (check the git log); keep every other plan, even if it looks finished or stale.
+- Delete what is no longer needed: task notes for work that is done (check the git log and branches), notes superseded by newer notes or by the project'"'"'s docs, and logs or outputs of finished runs.
 - Keep anything that may still be needed, and anything you are unsure about.
 - Where several notes cover the same topic, merge them into one.
 - Make sure each note you keep begins with the date it was last true and what it is about.

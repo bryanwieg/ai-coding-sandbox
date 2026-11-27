@@ -5,7 +5,8 @@
 # entries untouched for the project's last SANDBOX_SCRATCHPAD_DAYS session
 # days (default 7; "off" keeps everything). Age counts only days on which a
 # session started, recorded in .session-days, so time away from the project
-# does not age its notes. Only sessions do this.
+# does not age its notes. Plans in plans/ never age out: only the exit
+# tidy-up removes them, once their work is merged. Only sessions do this.
 set -eu
 
 [ "${SANDBOX_SESSION:-}" = 1 ] || exit 0
@@ -49,6 +50,8 @@ tail -n "$keep" "$log" > "$log.new" && mv "$log.new" "$log"
 [ "$(wc -l < "$log")" -ge "$days" ] || exit 0
 cutoff=$(head -n 1 "$log")
 # find does not follow links, so only entries inside the folder are removed.
+# -delete implies -depth, which disables -prune, so plans/ is excluded by path.
 find "$scratch" -mindepth 1 ! -type d ! -path "$scratch/.gitignore" ! -path "$scratch/.session-days" \
-    ! -newermt "$cutoff" -delete 2>/dev/null || :
-find "$scratch" -mindepth 1 -type d -empty -delete 2>/dev/null || :
+    ! -path "$scratch/plans/*" ! -newermt "$cutoff" -delete 2>/dev/null || :
+find "$scratch" -mindepth 1 -type d -empty ! -path "$scratch/plans" ! -path "$scratch/plans/*" \
+    -delete 2>/dev/null || :
