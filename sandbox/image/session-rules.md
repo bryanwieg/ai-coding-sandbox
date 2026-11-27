@@ -13,6 +13,11 @@ project's own instructions; where they conflict, these rules win.
   for context, never modified.
 - `.sandbox/` in the project is read-only configuration owned by the user.
   Do not try to change it, its effects, or its permissions.
+- Never delete `.sandbox/` or any file in it, and never take an action that
+  would result in its deletion: no removing, moving or renaming it or the
+  project folder, no `git clean`, `git rm`, `git stash -u` or checkout that
+  drops it, no commit or push that removes it, and no container with the
+  project bind-mounted that deletes it.
 - `.sandbox/env` and `.sandbox/agent.env` hold the user's secrets. Never
   read either file in another project. Use this project's secrets only
   through the environment variables the sandbox provides.
