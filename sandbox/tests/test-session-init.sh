@@ -191,10 +191,12 @@ fi
 for day in 01 02 03 04 05 06; do
     printf '2020-01-%s\n' "$day" >> "$scratch/.session-days"
 done
-mkdir -p "$scratch/old-dir"
+mkdir -p "$scratch/old-dir" "$scratch/plans/old-plan"
 : > "$scratch/old-dir/note"
+: > "$scratch/plans/old-plan/phase.md"
 : > "$scratch/recent"
-touch -d '2019-12-01' "$scratch/ancient" "$scratch/old-dir/note" "$scratch/.gitignore"
+touch -d '2019-12-01' "$scratch/ancient" "$scratch/old-dir/note" "$scratch/.gitignore" \
+    "$scratch/plans/old-plan/phase.md"
 touch -d '2020-01-05' "$scratch/recent"
 check 'the image outside a session leaves the scratchpad alone' 0 '' 07-scratchpad -e SANDBOX_SESSION=
 check 'cleanup off keeps old entries' 0 '' 07-scratchpad -e SANDBOX_SCRATCHPAD_DAYS=off
@@ -206,8 +208,9 @@ if [ -e "$scratch/ancient" ]; then pass 'old entries survive an invalid age'; el
 sed -i '$d' "$scratch/.session-days"
 check 'the scratchpad is cleaned silently' 0 '' 07-scratchpad
 if [ ! -e "$scratch/ancient" ] && [ ! -e "$scratch/old-dir" ] && [ -e "$scratch/recent" ] &&
-    [ -e "$scratch/.gitignore" ] && [ "$(wc -l < "$scratch/.session-days")" -eq 7 ]; then
-    pass 'entries untouched for 7 session days go; newer entries and bookkeeping stay'
+    [ -e "$scratch/.gitignore" ] && [ -e "$scratch/plans/old-plan/phase.md" ] &&
+    [ "$(wc -l < "$scratch/.session-days")" -eq 7 ]; then
+    pass 'entries untouched for 7 session days go; newer entries, plans and bookkeeping stay'
 else
     fail "unexpected scratchpad contents: $(cd "$scratch" && find . | sort | tr '\n' ' ')"
 fi

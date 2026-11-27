@@ -73,7 +73,9 @@ last session ends.
   notes, plans, logs and scratch files that should outlast `/tmp`; it keeps
   itself out of Git. At a normal exit, when it changed, the agent is run once
   more to tidy it; each start deletes entries untouched for the project's last
-  `SANDBOX_SCRATCHPAD_DAYS` session days (default 7). Exit also deletes local
+  `SANDBOX_SCRATCHPAD_DAYS` session days (default 7), except plans in
+  `.ai-scratchpad/plans/`, which are deleted only once their work is merged
+  into the default branch. Exit also deletes local
   branches already merged, rebased or squashed into the default branch.
 - `XDG_CONFIG_HOME` defaults to `~/.claude/xdg`, shared by both agents, so
   plugins and tools can persist settings and task ledgers while the rest of
@@ -366,7 +368,8 @@ Defaults for any project; the project's own instructions override them.
   before going deep.
 - Keep behavior unchanged unless asked, and do not add single-use helpers or
   new files without a reason.
-- Keep personal notes, plans and logs in `.ai-scratchpad/`, not in `/tmp`
+- Keep personal notes, plans and logs in `.ai-scratchpad/` (plans in
+  `.ai-scratchpad/plans/`), not in `/tmp`
   or the project's tracked files, and never commit them. Start each note
   with its date and topic, and delete it once its work is done.
 - Notes, memories and docs may be out of date: check them against the code
